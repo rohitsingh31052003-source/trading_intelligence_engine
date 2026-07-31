@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 
+from engine import config
 from engine.intelligence.swings import SwingEngine
 from engine.models.ohlcv import OHLCVCandle
-from engine.models.swing import SwingType
-
+from engine.models.swing import SwingStatus, SwingType
+from engine.config.swing_config import SwingConfig
 
 def make_candle(
     high: float,
@@ -27,12 +28,13 @@ def test_invalid_lookback():
     import pytest
 
     with pytest.raises(ValueError):
-        SwingEngine(lookback=0)
+        SwingEngine(SwingConfig(lookback=0))
 
 def test_valid_lookback():
-    engine = SwingEngine(lookback=2)
+    config = SwingConfig(lookback=2)
+    engine = SwingEngine(config)
 
-    assert engine.lookback == 2
+    assert engine.config.lookback == 2
 
 def test_detect_single_swing_high():
     candles = [
@@ -43,7 +45,8 @@ def test_detect_single_swing_high():
         make_candle(9, 5, 4),
     ]
 
-    engine = SwingEngine(lookback=2)
+    config = SwingConfig(lookback=2)
+    engine = SwingEngine(config)
 
     swings = engine.detect(candles)
 
@@ -65,7 +68,7 @@ def test_detect_single_swing_low():
         make_candle(15, 9, 4),
     ]
 
-    engine = SwingEngine()
+    engine = SwingEngine(SwingConfig())
 
     swings = engine.detect(candles)
 
@@ -87,7 +90,7 @@ def test_no_swings():
         make_candle(14, 9, 4),
     ]
 
-    engine = SwingEngine()
+    engine = SwingEngine(SwingConfig())
 
     swings = engine.detect(candles)
 
@@ -99,7 +102,7 @@ def test_small_dataset():
         make_candle(11, 6, 1),
     ]
 
-    engine = SwingEngine()
+    engine = SwingEngine(SwingConfig())
 
     swings = engine.detect(candles)
 
@@ -111,7 +114,7 @@ def test_small_dataset():
         for i in range(5)
     ]
 
-    engine = SwingEngine(lookback=5)
+    engine = SwingEngine(SwingConfig(lookback=5))
 
     swings = engine.detect(candles)
 
@@ -126,7 +129,7 @@ def test_equal_highs_are_not_swing():
         make_candle(9, 5, 4),
     ]
 
-    engine = SwingEngine()
+    engine = SwingEngine(SwingConfig())
 
     swings = engine.detect(candles)
 
@@ -147,7 +150,7 @@ def test_equal_lows_are_not_swing():
         make_candle(15, 9, 4),
     ]
 
-    engine = SwingEngine()
+    engine = SwingEngine(SwingConfig())
 
     swings = engine.detect(candles)
 
@@ -158,3 +161,36 @@ def test_equal_lows_are_not_swing():
     ]
 
     assert len(lows) == 0
+
+def test_swing_is_confirmed():
+    candles = [
+        make_candle(10, 5, 0),
+        make_candle(12, 6, 1),
+        make_candle(15, 7, 2),
+        make_candle(11, 6, 3),
+        make_candle(9, 5, 4),
+    ]
+
+    engine = SwingEngine(SwingConfig())
+
+    swings = engine.detect(candles)
+
+    assert len(swings) == 1
+    assert swings[0].confirmed is True
+    assert swings[0].status == SwingStatus.CONFIRMED
+
+def test_swing_is_candidate():
+    candles = [
+        make_candle(10, 5, 0),
+        make_candle(12, 6, 1),
+        make_candle(15, 7, 2),
+        make_candle(11, 6, 3),
+    ]
+
+    engine = SwingEngine(SwingConfig())
+
+    swings = engine.detect(candles)
+
+    assert len(swings) == 1
+    assert swings[0].confirmed is False
+    assert swings[0].status == SwingStatus.CANDIDATE

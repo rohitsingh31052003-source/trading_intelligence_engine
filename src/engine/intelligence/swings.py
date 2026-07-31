@@ -3,10 +3,11 @@ Swing detection engine.
 """
 
 from __future__ import annotations
-
+from engine.config.swing_config import SwingConfig
 from engine.models.ohlcv import OHLCVCandle
 from engine.models.swing import (
     SwingPoint,
+    SwingStatus,
     SwingStrength,
     SwingType,
 )
@@ -17,11 +18,11 @@ class SwingEngine:
     Detects swing highs and swing lows.
     """
 
-    def __init__(self, lookback: int = 2) -> None:
-        if lookback < 1:
-            raise ValueError("lookback must be at least 1")
+    def __init__(self, config: SwingConfig | None = None) -> None:
+        self.config = config or SwingConfig()
 
-        self.lookback = lookback
+        if self.config.lookback < 1:
+            raise ValueError("lookback must be at least 1")
 
     def detect(
         self,
@@ -33,36 +34,47 @@ class SwingEngine:
 
         swings: list[SwingPoint] = []
 
-        if len(candles) < (self.lookback * 2 + 1):
+        if len(candles) < self.config.lookback:
             return swings
 
         for i in range(
-            self.lookback,
-            len(candles) - self.lookback,
+            self.config.lookback,
+            len(candles)
         ):
             current = candles[i]
 
             left = candles[
-                i - self.lookback : i
+                i - self.config.lookback : i
             ]
 
             right = candles[
-                i + 1 : i + self.lookback + 1
+                i + 1 : min(
+                    i + self.config.lookback + 1,
+                    len(candles)
+                )
             ]
+
+            confirmed = len(right) == self.config.lookback
+
+            candidate = 0 < len(right) < self.config.lookback
 
             is_high = all(
                 current.high > candle.high
                 for candle in left + right
             )
 
-            if is_high:
+            if is_high and (confirmed or candidate):
+                confirmation_index = (i + self.config.confirmation_candles)
+                status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
                 swings.append(
                     SwingPoint(
                         timestamp=current.timestamp,
                         index=i,
                         price=current.high,
                         swing_type=SwingType.HIGH,
-                        confirmed=True,
+                        confirmation_index=confirmation_index,
+                        confirmed=confirmed,
+                        status=status,
                         strength=SwingStrength.NORMAL,
                     )
                 )
@@ -72,14 +84,18 @@ class SwingEngine:
                 for candle in left + right
             )
 
-            if is_low:
+            if is_low and (confirmed or candidate):
+                confirmation_index = (i + self.config.confirmation_candles)
+                status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
                 swings.append(
                     SwingPoint(
                         timestamp=current.timestamp,
                         index=i,
                         price=current.low,
                         swing_type=SwingType.LOW,
-                        confirmed=True,
+                        confirmation_index=confirmation_index,
+                        confirmed=confirmed,
+                        status=status,
                         strength=SwingStrength.NORMAL,
                     )
                 )
