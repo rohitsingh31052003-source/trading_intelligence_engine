@@ -46,6 +46,10 @@ class YahooFinanceProvider(BaseDataProvider):
             auto_adjust=False,
         )
 
+        # Flatten MultiIndex columns.
+        if data.columns.nlevels > 1:
+            data.columns = data.columns.get_level_values(0)
+
         candles: list[OHLCVCandle] = []
 
         for timestamp, row in data.iterrows():
