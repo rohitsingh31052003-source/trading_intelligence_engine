@@ -10,7 +10,7 @@ import yfinance as yf
 
 from engine.data.base_provider import BaseDataProvider
 from engine.models.ohlcv import OHLCVCandle
-
+from engine.data.normalizer import DataNormalizer
 
 class YahooFinanceProvider(BaseDataProvider):
     """
@@ -46,6 +46,8 @@ class YahooFinanceProvider(BaseDataProvider):
             auto_adjust=False,
         )
 
+        data = DataNormalizer.normalize(data)
+        
         # Flatten MultiIndex columns.
         if data.columns.nlevels > 1:
             data.columns = data.columns.get_level_values(0)
