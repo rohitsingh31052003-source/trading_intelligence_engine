@@ -4,9 +4,10 @@ Domain models for swing analysis.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from engine.models.swing_evidence import SwingEvidence
 
 
 class SwingType(Enum):
@@ -47,3 +48,5 @@ class SwingPoint:
     confirmed: bool
     status: SwingStatus
     strength: SwingStrength = SwingStrength.NORMAL
+
+    evidence: SwingEvidence = field(default_factory=SwingEvidence)

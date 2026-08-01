@@ -4,6 +4,7 @@ Swing detection engine.
 
 from __future__ import annotations
 from engine.config.swing_config import SwingConfig
+from engine.intelligence.swing_quality import SwingQualityAnalyzer
 from engine.models.ohlcv import OHLCVCandle
 from engine.models.swing import (
     SwingPoint,
@@ -20,6 +21,8 @@ class SwingEngine:
 
     def __init__(self, config: SwingConfig | None = None) -> None:
         self.config = config or SwingConfig()
+
+        self.quality = SwingQualityAnalyzer()
 
         if self.config.lookback < 1:
             raise ValueError("lookback must be at least 1")
@@ -66,8 +69,7 @@ class SwingEngine:
             if is_high and (confirmed or candidate):
                 confirmation_index = (i + self.config.confirmation_candles)
                 status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
-                swings.append(
-                    SwingPoint(
+                swing = SwingPoint(
                         timestamp=current.timestamp,
                         index=i,
                         price=current.high,
@@ -77,7 +79,13 @@ class SwingEngine:
                         status=status,
                         strength=SwingStrength.NORMAL,
                     )
+
+                self.quality.analyze(
+                    swing,
+                    candles,
                 )
+
+                swings.append(swing)
 
             is_low = all(
                 current.low < candle.low
@@ -87,17 +95,22 @@ class SwingEngine:
             if is_low and (confirmed or candidate):
                 confirmation_index = (i + self.config.confirmation_candles)
                 status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
-                swings.append(
-                    SwingPoint(
-                        timestamp=current.timestamp,
-                        index=i,
-                        price=current.low,
-                        swing_type=SwingType.LOW,
+                swing = SwingPoint(
+                    timestamp=current.timestamp,
+                    index=i,
+                    price=current.low,
+                    swing_type=SwingType.LOW,
                         confirmation_index=confirmation_index,
                         confirmed=confirmed,
                         status=status,
                         strength=SwingStrength.NORMAL,
                     )
+
+                self.quality.analyze(
+                    swing,
+                    candles,
                 )
 
+                swings.append(swing)
+            
         return swings
