@@ -36,3 +36,5 @@ class StructureAnalysis:
     bearish_sequence: int
 
     structure_intact: bool
+
+    protected_structure: StructurePoint | None = None

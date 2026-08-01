@@ -35,13 +35,22 @@ class StructureAnalysisEngine:
                 bullish_sequence=0,
                 bearish_sequence=0,
                 structure_intact=False,
+                protected_structure=None,
     )
 
         bullish_sequence = 0
         bearish_sequence = 0
 
+        protected_structure = None
+
         for point in structures:
             structure = point.structure
+
+            if structure == StructureType.HIGHER_LOW:
+                protected_structure = point
+
+            elif structure == StructureType.LOWER_HIGH:
+                protected_structure = point
 
             if structure in (
                 StructureType.HIGHER_HIGH,
@@ -99,4 +108,5 @@ class StructureAnalysisEngine:
             bullish_sequence=bullish_sequence,
             bearish_sequence=bearish_sequence,
             structure_intact=structure_intact,
+            protected_structure=protected_structure,
         )
