@@ -4,17 +4,13 @@ Domain models for market structure analysis.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from engine.models.market_structure import StructurePoint
 
 
 class StructureBias(Enum):
-    """
-    Overall directional bias of market structure.
-    """
-
     UNKNOWN = "UNKNOWN"
     BULLISH = "BULLISH"
     BEARISH = "BEARISH"
@@ -27,14 +23,17 @@ class StructureAnalysis:
     Summary of the current market structure.
     """
 
-    bias: StructureBias
+    previous_bias: StructureBias
+    current_bias: StructureBias
 
-    latest: StructurePoint| None
+    previous_protected_structure: StructurePoint | None
+    current_protected_structure: StructurePoint | None
+
+    latest: StructurePoint | None
 
     bullish_sequence: int
-
     bearish_sequence: int
 
     structure_intact: bool
 
-    protected_structure: StructurePoint | None = None
+    reasons: list[str] = field(default_factory=list)

@@ -29,9 +29,9 @@ def make_structure(
     swing = SwingPoint(
         timestamp=datetime.now(),
         index=0,
+        confirmation_index=0,
         price=price,
         swing_type=swing_type,
-        confirmation_index=0,
         confirmed=True,
         status=SwingStatus.CONFIRMED,
         strength=SwingStrength.NORMAL,
@@ -48,7 +48,12 @@ def test_no_structures():
     engine = BOSEngine()
 
     analysis = StructureAnalysis(
-        bias=StructureBias.UNKNOWN,
+        previous_bias=StructureBias.UNKNOWN,
+        current_bias=StructureBias.UNKNOWN,
+
+        previous_protected_structure=None,
+        current_protected_structure=None,
+
         latest=None,
         bullish_sequence=0,
         bearish_sequence=0,
@@ -70,7 +75,12 @@ def test_bullish_bias_breaks_down():
     )
 
     analysis = StructureAnalysis(
-        bias=StructureBias.BULLISH,
+        previous_bias=StructureBias.BULLISH,
+        current_bias=StructureBias.NEUTRAL,
+
+        previous_protected_structure=None,
+        current_protected_structure=None,
+        
         latest=latest,
         bullish_sequence=5,
         bearish_sequence=0,
@@ -92,7 +102,10 @@ def test_bearish_bias_breaks_up():
     )
 
     analysis = StructureAnalysis(
-        bias=StructureBias.BEARISH,
+        previous_bias=StructureBias.BEARISH,
+        current_bias=StructureBias.BEARISH,
+        previous_protected_structure=None,
+        current_protected_structure=None,
         latest=latest,
         bullish_sequence=0,
         bearish_sequence=6,
@@ -114,7 +127,10 @@ def test_healthy_bullish_trend():
     )
 
     analysis = StructureAnalysis(
-        bias=StructureBias.BULLISH,
+        previous_bias=StructureBias.BULLISH,
+        current_bias=StructureBias.NEUTRAL,
+        previous_protected_structure=None,
+        current_protected_structure=None,
         latest=latest,
         bullish_sequence=4,
         bearish_sequence=0,
@@ -136,7 +152,10 @@ def test_healthy_bearish_trend():
     )
 
     analysis = StructureAnalysis(
-        bias=StructureBias.BEARISH,
+        previous_bias=StructureBias.BEARISH,
+        current_bias=StructureBias.NEUTRAL,
+        previous_protected_structure=None,
+        current_protected_structure=None,
         latest=latest,
         bullish_sequence=0,
         bearish_sequence=4,

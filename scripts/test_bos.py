@@ -36,22 +36,24 @@ def main():
     print("=== Break of Structure ===")
     print()
 
-    print(f"Current Bias      : {analysis.bias.name}")
+    print(f"Previous Bias : {analysis.previous_bias.name}")
+    print(f"Current Bias  : {analysis.current_bias.name}")
+    print()
 
     if analysis.latest:
-        print(f"Latest Structure  : {analysis.latest.structure.name}")
-        print(f"Latest Swing      : {analysis.latest.swing.swing_type.name}")
-        print(f"Latest Price      : {analysis.latest.swing.price:.2f}")
+        print(f"Latest Structure : {analysis.latest.structure.name}")
+        print(f"Latest Swing     : {analysis.latest.swing.swing_type.name}")
+        print(f"Latest Price     : {analysis.latest.swing.price:.2f}")
 
     print()
 
-    print(f"Detected          : {result.detected}")
-    print(f"Type              : {result.bos_type.name}")
-    print(f"Confidence        : {result.confidence:.1f}")
+    print(f"Detected   : {'YES' if result.detected else 'NO'}")
+    print(f"Type       : {result.bos_type.name}")
+    print(f"Confidence : {result.confidence:.1f}")
 
     if result.trigger_swing:
-        print(f"Trigger Swing     : {result.trigger_swing.swing_type.name}")
-        print(f"Trigger Price     : {result.trigger_swing.price:.2f}")
+        print(f"Trigger    : {result.trigger_swing.swing_type.name}")
+        print(f"Price      : {result.trigger_swing.price:.2f}")
 
     print("\nReasons:")
     for reason in result.reasons:

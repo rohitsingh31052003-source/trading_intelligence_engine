@@ -3,7 +3,7 @@ Break of Structure engine.
 """
 
 from engine.models.bos import BOSResult, BOSType
-from engine.models.market_structure import StructurePoint
+from engine.models.market_structure import  StructureType
 from engine.models.structure_analysis import (
     StructureAnalysis,
     StructureBias,
@@ -25,84 +25,94 @@ class BOSEngine:
 
         if analysis.latest is None:
             return BOSResult(
-                detected=False,
-                bos_type=BOSType.NONE,
-                protected_swing=None,
-                trigger_swing=None,
-                confidence=0.0,
-                reasons=["No market structure available."],
-            )
+            detected=False,
+            bos_type=BOSType.NONE,
+            protected_swing=None,
+            trigger_swing=None,
+            confidence=0.0,
+            reasons=[
+                "No market structure available.",
+            ],
+        )
 
         latest = analysis.latest
 
-        # ----------------------------
-        # Bullish structure broken
-        # ----------------------------
+        # ---------------------------------------
+        # Previous Bullish Structure Broken
+        # ---------------------------------------
         if (
-            analysis.bias == StructureBias.BULLISH
-            and latest.structure.name == "LOWER_LOW"
-        ):
+            analysis.previous_bias == StructureBias.BULLISH
+            and latest.structure == StructureType.LOWER_LOW
+    ):
             return BOSResult(
                 detected=True,
                 bos_type=BOSType.BEARISH,
-                protected_swing=None,
-                trigger_swing=latest.swing,
-                confidence=self._calculate_confidence(analysis),
-                reasons=[
-                    "Bullish market structure was active.",
-                    "Latest confirmed structure formed a LOWER_LOW.",
-                    "Protected Higher Low has been invalidated.",
-                ],
-            )
+                protected_swing=(
+                    analysis.previous_protected_structure.swing
+                    if analysis.previous_protected_structure
+                    else None
+            ),
+            trigger_swing=latest.swing,
+            confidence=self._calculate_confidence(analysis),
+            reasons=[
+                "Previous bullish structure was active.",
+                "Latest LOWER_LOW invalidated the protected Higher Low.",
+                "Market transitioned to a neutral state.",
+            ],
+        )
 
-        # ----------------------------
-        # Bearish structure broken
-        # ----------------------------
+        # ---------------------------------------
+        # Previous Bearish Structure Broken
+        # ---------------------------------------
         if (
-            analysis.bias == StructureBias.BEARISH
-            and latest.structure.name == "HIGHER_HIGH"
-        ):
+            analysis.previous_bias == StructureBias.BEARISH
+            and latest.structure == StructureType.HIGHER_HIGH
+    ):
             return BOSResult(
                 detected=True,
                 bos_type=BOSType.BULLISH,
-                protected_swing=None,
-                trigger_swing=latest.swing,
-                confidence=self._calculate_confidence(analysis),
-                reasons=[
-                    "Bearish market structure was active.",
-                    "Latest confirmed structure formed a HIGHER_HIGH.",
-                    "Protected Lower High has been invalidated.",
-                ],
-            )
+                protected_swing=(
+                    analysis.previous_protected_structure.swing
+                    if analysis.previous_protected_structure
+                    else None
+            ),
+            trigger_swing=latest.swing,
+            confidence=self._calculate_confidence(analysis),
+            reasons=[
+                "Previous bearish structure was active.",
+                "Latest HIGHER_HIGH invalidated the protected Lower High.",
+                "Market transitioned to a neutral state.",
+            ],
+        )
 
-        # ----------------------------
+        # ---------------------------------------
         # No BOS
-        # ----------------------------
-        
-        if analysis.bias == StructureBias.BULLISH:
+        # ---------------------------------------
+        if analysis.current_bias == StructureBias.BULLISH:
             reasons = [
                 "Current bullish structure remains intact.",
-                "Latest confirmed swing did not invalidate the bullish structure.",
+                "Latest confirmed swing did not invalidate the protected Higher Low.",
             ]
+        
 
-        elif analysis.bias == StructureBias.BEARISH:
+        elif analysis.current_bias == StructureBias.BEARISH:
             reasons = [
                 "Current bearish structure remains intact.",
-                "Latest confirmed swing did not invalidate the bearish structure.",
-    ]
+                "Latest confirmed swing did not invalidate the protected Lower High.",
+        ]
 
-        elif analysis.bias == StructureBias.NEUTRAL:
+        elif analysis.current_bias == StructureBias.NEUTRAL:
             reasons = [
                 "Market structure is neutral.",
                 "No valid Break of Structure detected.",
-    ]
+        ]
 
         else:
             reasons = [
                 "Market bias is unknown.",
                 "Insufficient structure to evaluate BOS.",
-    ]
-        
+        ]
+
         return BOSResult(
             detected=False,
             bos_type=BOSType.NONE,
@@ -110,8 +120,7 @@ class BOSEngine:
             trigger_swing=None,
             confidence=0.0,
             reasons=reasons,
-        )
-
+    )
     def _calculate_confidence(
         self,
         analysis: StructureAnalysis,
