@@ -48,8 +48,8 @@ class CHOCHEngine:
                     "Bearish Break of Structure confirmed.",
                     "Latest structure formed a LOWER_HIGH.",
                     "Market has transitioned into a bearish character.",
-        ],
-    )
+                ],
+            )
 
         # Bearish → Bullish transition
         if (
@@ -67,8 +67,8 @@ class CHOCHEngine:
                     "Bullish Break of Structure confirmed.",
                     "Latest structure formed a HIGHER_LOW.",
                     "Market has transitioned into a bullish character.",
-        ],
-    )
+                ],
+            )
 
         return CHOCHResult(
             detected=False,
@@ -77,4 +77,4 @@ class CHOCHEngine:
             new_bias=analysis.current_bias,
             confidence=0.0,
             reasons=["No Change of Character detected."],
-)
+        )

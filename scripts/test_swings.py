@@ -22,9 +22,9 @@ print(f"Detected {len(swings)} swings\n")
 
 for swing in swings:
     print(
-    f"{swing.swing_type.name:<5} "
-    f"{swing.timestamp.date()} "
-    f"Price={swing.price:.2f} "
-    f"Move={swing.evidence.move_percent:.2f}% "
-    f"Confidence={swing.evidence.confidence:.1f}"
+        f"{swing.swing_type.name:<5} "
+        f"{swing.timestamp.date()} "
+        f"Price={swing.price:.2f} "
+        f"Move={swing.evidence.move_percent:.2f}% "
+        f"Confidence={swing.evidence.confidence:.1f}"
     )

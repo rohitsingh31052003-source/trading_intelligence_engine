@@ -10,7 +10,6 @@ from engine.models.structure_analysis import StructureBias
 
 
 class TrendState(Enum):
-
     UNKNOWN = "UNKNOWN"
 
     RANGING = "RANGING"
@@ -24,6 +23,8 @@ class TrendState(Enum):
     WEAK_BEARISH = "WEAK_BEARISH"
 
     BEARISH = "BEARISH"
+
+
 @dataclass(slots=True, frozen=True)
 class TrendResult:
     """

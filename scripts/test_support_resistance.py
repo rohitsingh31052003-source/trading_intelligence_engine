@@ -24,9 +24,7 @@ def main():
         print(error)
         return
 
-    swings = SwingEngine(
-        SwingConfig()
-    ).detect(candles)
+    swings = SwingEngine(SwingConfig()).detect(candles)
 
     # Optional but keeps the pipeline consistent
     MarketStructureEngine().analyze(swings)
@@ -41,7 +39,6 @@ def main():
         return
 
     for level in levels:
-
         print(level.level_type.name)
         print()
 

@@ -6,6 +6,7 @@ from engine.models.ohlcv import OHLCVCandle
 from engine.models.swing import SwingStatus, SwingType
 from engine.config.swing_config import SwingConfig
 
+
 def make_candle(
     high: float,
     low: float,
@@ -24,17 +25,20 @@ def make_candle(
         volume=1000,
     )
 
+
 def test_invalid_lookback():
     import pytest
 
     with pytest.raises(ValueError):
         SwingEngine(SwingConfig(lookback=0))
 
+
 def test_valid_lookback():
     config = SwingConfig(lookback=2)
     engine = SwingEngine(config)
 
     assert engine.config.lookback == 2
+
 
 def test_detect_single_swing_high():
     candles = [
@@ -50,14 +54,11 @@ def test_detect_single_swing_high():
 
     swings = engine.detect(candles)
 
-    highs = [
-        s
-        for s in swings
-        if s.swing_type == SwingType.HIGH
-    ]
+    highs = [s for s in swings if s.swing_type == SwingType.HIGH]
 
     assert len(highs) == 1
     assert highs[0].price == 15
+
 
 def test_detect_single_swing_low():
     candles = [
@@ -72,14 +73,11 @@ def test_detect_single_swing_low():
 
     swings = engine.detect(candles)
 
-    lows = [
-        s
-        for s in swings
-        if s.swing_type == SwingType.LOW
-    ]
+    lows = [s for s in swings if s.swing_type == SwingType.LOW]
 
     assert len(lows) == 1
     assert lows[0].price == 4
+
 
 def test_no_swings():
     candles = [
@@ -96,6 +94,7 @@ def test_no_swings():
 
     assert len(swings) == 0
 
+
 def test_small_dataset():
     candles = [
         make_candle(10, 5, 0),
@@ -109,16 +108,14 @@ def test_small_dataset():
     assert swings == []
 
     def test_large_lookback():
-        candles = [
-        make_candle(10, 5, i)
-        for i in range(5)
-    ]
+        candles = [make_candle(10, 5, i) for i in range(5)]
 
     engine = SwingEngine(SwingConfig(lookback=5))
 
     swings = engine.detect(candles)
 
     assert swings == []
+
 
 def test_equal_highs_are_not_swing():
     candles = [
@@ -133,13 +130,10 @@ def test_equal_highs_are_not_swing():
 
     swings = engine.detect(candles)
 
-    highs = [
-        s
-        for s in swings
-        if s.swing_type == SwingType.HIGH
-    ]
+    highs = [s for s in swings if s.swing_type == SwingType.HIGH]
 
     assert len(highs) == 0
+
 
 def test_equal_lows_are_not_swing():
     candles = [
@@ -154,13 +148,10 @@ def test_equal_lows_are_not_swing():
 
     swings = engine.detect(candles)
 
-    lows = [
-        s
-        for s in swings
-        if s.swing_type == SwingType.LOW
-    ]
+    lows = [s for s in swings if s.swing_type == SwingType.LOW]
 
     assert len(lows) == 0
+
 
 def test_swing_is_confirmed():
     candles = [
@@ -178,6 +169,7 @@ def test_swing_is_confirmed():
     assert len(swings) == 1
     assert swings[0].confirmed is True
     assert swings[0].status == SwingStatus.CONFIRMED
+
 
 def test_swing_is_candidate():
     candles = [

@@ -40,45 +40,32 @@ class SwingEngine:
         if len(candles) < self.config.lookback:
             return swings
 
-        for i in range(
-            self.config.lookback,
-            len(candles)
-        ):
+        for i in range(self.config.lookback, len(candles)):
             current = candles[i]
 
-            left = candles[
-                i - self.config.lookback : i
-            ]
+            left = candles[i - self.config.lookback : i]
 
-            right = candles[
-                i + 1 : min(
-                    i + self.config.lookback + 1,
-                    len(candles)
-                )
-            ]
+            right = candles[i + 1 : min(i + self.config.lookback + 1, len(candles))]
 
             confirmed = len(right) == self.config.lookback
 
             candidate = 0 < len(right) < self.config.lookback
 
-            is_high = all(
-                current.high > candle.high
-                for candle in left + right
-            )
+            is_high = all(current.high > candle.high for candle in left + right)
 
             if is_high and (confirmed or candidate):
-                confirmation_index = (i + self.config.confirmation_candles)
-                status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
+                confirmation_index = i + self.config.confirmation_candles
+                status = SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE
                 swing = SwingPoint(
-                        timestamp=current.timestamp,
-                        index=i,
-                        price=current.high,
-                        swing_type=SwingType.HIGH,
-                        confirmation_index=confirmation_index,
-                        confirmed=confirmed,
-                        status=status,
-                        strength=SwingStrength.NORMAL,
-                    )
+                    timestamp=current.timestamp,
+                    index=i,
+                    price=current.high,
+                    swing_type=SwingType.HIGH,
+                    confirmation_index=confirmation_index,
+                    confirmed=confirmed,
+                    status=status,
+                    strength=SwingStrength.NORMAL,
+                )
 
                 self.quality.analyze(
                     swing,
@@ -87,24 +74,21 @@ class SwingEngine:
 
                 swings.append(swing)
 
-            is_low = all(
-                current.low < candle.low
-                for candle in left + right
-            )
+            is_low = all(current.low < candle.low for candle in left + right)
 
             if is_low and (confirmed or candidate):
-                confirmation_index = (i + self.config.confirmation_candles)
-                status = (SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE)
+                confirmation_index = i + self.config.confirmation_candles
+                status = SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE
                 swing = SwingPoint(
                     timestamp=current.timestamp,
                     index=i,
                     price=current.low,
                     swing_type=SwingType.LOW,
-                        confirmation_index=confirmation_index,
-                        confirmed=confirmed,
-                        status=status,
-                        strength=SwingStrength.NORMAL,
-                    )
+                    confirmation_index=confirmation_index,
+                    confirmed=confirmed,
+                    status=status,
+                    strength=SwingStrength.NORMAL,
+                )
 
                 self.quality.analyze(
                     swing,
@@ -112,5 +96,5 @@ class SwingEngine:
                 )
 
                 swings.append(swing)
-            
+
         return swings

@@ -49,8 +49,6 @@ class DataNormalizer:
         ]
 
         if missing:
-            raise ValueError(
-                f"Missing required columns: {', '.join(missing)}"
-            )
+            raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
         return df

@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from dataclasses import replace
 
 from engine.models.structural_level_evidence import (
     StructuralLevelEvidence,
@@ -69,3 +70,12 @@ class StructuralLevel:
         Overall strength derived from evidence.
         """
         return self.evidence.total
+
+    def with_strength(
+        self,
+        evidence,
+    ):
+        return replace(
+            self,
+            evidence=evidence,
+        )

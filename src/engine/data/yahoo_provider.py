@@ -13,6 +13,7 @@ from engine.models.ohlcv import OHLCVCandle
 from engine.data.normalizer import DataNormalizer
 from datetime import datetime, timedelta
 
+
 class YahooFinanceProvider(BaseDataProvider):
     """
     Yahoo Finance implementation.
@@ -52,7 +53,7 @@ class YahooFinanceProvider(BaseDataProvider):
                 f"No market data returned for "
                 f"{symbol} between "
                 f"{start.date()} and {end.date()}."
-    )
+            )
         data = DataNormalizer.normalize(data)
         # Flatten MultiIndex columns.
         if data.columns.nlevels > 1:
@@ -61,7 +62,6 @@ class YahooFinanceProvider(BaseDataProvider):
         candles: list[OHLCVCandle] = []
 
         for timestamp, row in data.iterrows():
-
             timestamp = (
                 timestamp.to_pydatetime()
                 if hasattr(timestamp, "to_pydatetime")
@@ -77,9 +77,8 @@ class YahooFinanceProvider(BaseDataProvider):
                     close=float(row["Close"]),
                     volume=float(row["Volume"]),
                 )
-
             )
-    
+
         return candles
 
     def get_latest(

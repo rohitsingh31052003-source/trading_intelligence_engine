@@ -1,4 +1,4 @@
-from datetime import UTC,datetime
+from datetime import UTC, datetime
 
 from engine.intelligence.bos import BOSEngine
 
@@ -50,10 +50,8 @@ def test_no_structures():
     analysis = StructureAnalysis(
         previous_bias=StructureBias.UNKNOWN,
         current_bias=StructureBias.UNKNOWN,
-
         previous_protected_structure=None,
         current_protected_structure=None,
-
         latest=None,
         bullish_sequence=0,
         bearish_sequence=0,
@@ -77,10 +75,8 @@ def test_bullish_bias_breaks_down():
     analysis = StructureAnalysis(
         previous_bias=StructureBias.BULLISH,
         current_bias=StructureBias.NEUTRAL,
-
         previous_protected_structure=None,
         current_protected_structure=None,
-        
         latest=latest,
         bullish_sequence=5,
         bearish_sequence=0,

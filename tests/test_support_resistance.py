@@ -7,11 +7,10 @@ from engine.models.support_resistance import (
     LevelStatus,
     LevelType,
 )
-from engine.models.swing import (
-    SwingPoint,
-    SwingStrength,
-    SwingType,
+from engine.intelligence.structural_strength import (
+    StructuralStrengthEngine,
 )
+
 from engine.models.swing import (
     SwingPoint,
     SwingStrength,
@@ -34,11 +33,7 @@ def make_swing(
         swing_type=swing_type,
         confirmation_index=5,
         confirmed=confirmed,
-        status=(
-            SwingStatus.CONFIRMED
-            if confirmed
-            else SwingStatus.CANDIDATE
-        ),
+        status=(SwingStatus.CONFIRMED if confirmed else SwingStatus.CANDIDATE),
         strength=SwingStrength.STRONG,
         evidence=SwingEvidence(),
     )
@@ -46,7 +41,8 @@ def make_swing(
 
 def test_confirmed_high_creates_resistance():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(
@@ -55,7 +51,8 @@ def test_confirmed_high_creates_resistance():
         )
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 1
     assert levels[0].level_type == LevelType.RESISTANCE
@@ -65,7 +62,8 @@ def test_confirmed_high_creates_resistance():
 
 def test_confirmed_low_creates_support():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(
@@ -74,7 +72,8 @@ def test_confirmed_low_creates_support():
         )
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 1
     assert levels[0].level_type == LevelType.SUPPORT
@@ -84,7 +83,8 @@ def test_confirmed_low_creates_support():
 
 def test_unconfirmed_swings_are_ignored():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(
@@ -99,23 +99,27 @@ def test_unconfirmed_swings_are_ignored():
         ),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels == []
 
 
 def test_empty_list_returns_empty_result():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
-    levels = engine.detect([])
+    levels = level_engine.detect([])
+    levels = strength_engine.evaluate(levels)
 
     assert levels == []
 
 
 def test_initial_strength_is_30():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(
@@ -124,14 +128,16 @@ def test_initial_strength_is_30():
         )
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels[0].strength == 40.0
 
 
 def test_initial_touches_is_one():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(
@@ -140,93 +146,114 @@ def test_initial_touches_is_one():
         )
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels[0].touches == 1
 
+
 def test_merge_close_supports():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100.00, SwingType.LOW),
         make_swing(100.15, SwingType.LOW),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 1
     assert levels[0].level_type == LevelType.SUPPORT
 
+
 def test_merge_close_resistances():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(1325, SwingType.HIGH),
         make_swing(1327, SwingType.HIGH),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 1
     assert levels[0].level_type == LevelType.RESISTANCE
 
+
 def test_do_not_merge_distant_levels():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100, SwingType.LOW),
         make_swing(108, SwingType.LOW),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 2
 
+
 def test_support_and_resistance_never_merge():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100, SwingType.LOW),
         make_swing(100.05, SwingType.HIGH),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert len(levels) == 2
 
+
 def test_touches_are_accumulated():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100.00, SwingType.LOW),
         make_swing(100.15, SwingType.LOW),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels[0].touches == 2
 
+
 def test_average_price_after_merge():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100.00, SwingType.LOW),
         make_swing(100.20, SwingType.LOW),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels[0].price == 100.10
 
+
 def test_strength_increases_after_merge():
 
-    engine = StructuralLevelsEngine()
+    level_engine = StructuralLevelsEngine()
+    strength_engine = StructuralStrengthEngine()
 
     swings = [
         make_swing(100.00, SwingType.LOW),
@@ -234,7 +261,8 @@ def test_strength_increases_after_merge():
         make_swing(100.10, SwingType.LOW),
     ]
 
-    levels = engine.detect(swings)
+    levels = level_engine.detect(swings)
+    levels = strength_engine.evaluate(levels)
 
     assert levels[0].touches == 3
-    assert levels[0].strength == 50.0
+    assert levels[0].strength == 47.0

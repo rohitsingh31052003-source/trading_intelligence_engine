@@ -6,10 +6,12 @@ from engine.models.ohlcv import OHLCVCandle
 from engine.models.swing import SwingPoint
 from engine.models.swing import SwingType
 
+
 class SwingQualityAnalyzer:
     """
     Evaluates the quality of detected swing points.
     """
+
     def __init__(self) -> None:
         self.confidence_multiplier = 10.0
 
@@ -28,18 +30,12 @@ class SwingQualityAnalyzer:
         if swing.swing_type == SwingType.HIGH:
             lowest = min(c.low for c in future)
 
-            move = (
-                (swing.price - lowest)
-                / swing.price
-            ) * 100
+            move = ((swing.price - lowest) / swing.price) * 100
 
         else:
             highest = max(c.high for c in future)
 
-            move = (
-                (highest - swing.price)
-                / swing.price
-            ) * 100
+            move = ((highest - swing.price) / swing.price) * 100
 
         swing.evidence.move_percent = round(move, 2)
 

@@ -26,20 +26,20 @@ class TrendEngine:
         if choch.detected and choch.choch_type == CHOCHType.BULLISH:
             return TrendResult(
                 state=TrendState.BULLISH,
-                evidence = TrendEvidence(
+                evidence=TrendEvidence(
                     structure_score=30,
                     sequence_score=20,
                     bos_score=15,
                     choch_score=25,
                     quality_score=10,
-),
+                ),
                 previous_bias=analysis.previous_bias,
                 current_bias=analysis.current_bias,
                 reasons=[
                     "Bullish Change of Character confirmed.",
                     "Bullish market regime established.",
-        ],
-    )
+                ],
+            )
 
         # Strong Bearish
         if choch.detected and choch.choch_type == CHOCHType.BEARISH:
@@ -57,8 +57,8 @@ class TrendEngine:
                 reasons=[
                     "Bearish Change of Character confirmed.",
                     "Bearish market regime established.",
-        ],
-    )
+                ],
+            )
 
         # Transition
         if bos.detected:
@@ -76,8 +76,8 @@ class TrendEngine:
                 reasons=[
                     "Break of Structure detected.",
                     "Market is transitioning.",
-        ],
-    )
+                ],
+            )
 
         # Bullish continuation
         if analysis.current_bias.name == "BULLISH":
@@ -89,19 +89,19 @@ class TrendEngine:
                     bos_score=15,
                     choch_score=25,
                     quality_score=10,
-),
+                ),
                 previous_bias=analysis.previous_bias,
                 current_bias=analysis.current_bias,
                 reasons=[
                     "Bullish market structure remains intact.",
-        ],
-    )
+                ],
+            )
 
         # Bearish continuation
         if analysis.current_bias.name == "BEARISH":
             return TrendResult(
                 state=TrendState.BEARISH,
-                evidence = TrendEvidence(
+                evidence=TrendEvidence(
                     structure_score=30,
                     sequence_score=10,
                     bos_score=0,
@@ -112,8 +112,8 @@ class TrendEngine:
                 current_bias=analysis.current_bias,
                 reasons=[
                     "Bearish market structure remains intact.",
-        ],
-    )
+                ],
+            )
 
         # Neutral / Ranging
         if analysis.current_bias.name == "NEUTRAL":
@@ -125,13 +125,13 @@ class TrendEngine:
                     bos_score=0,
                     choch_score=0,
                     quality_score=5,
-),
-            previous_bias=analysis.previous_bias,
-            current_bias=analysis.current_bias,
-            reasons=[
-                "No dominant directional structure.",
-        ],
-    )
+                ),
+                previous_bias=analysis.previous_bias,
+                current_bias=analysis.current_bias,
+                reasons=[
+                    "No dominant directional structure.",
+                ],
+            )
 
         return TrendResult(
             state=TrendState.UNKNOWN,
@@ -140,5 +140,5 @@ class TrendEngine:
             evidence=TrendEvidence(),
             reasons=[
                 "Unable to determine market regime.",
-    ],
-)
+            ],
+        )

@@ -28,9 +28,7 @@ def main():
         print(error)
         return
 
-    swings = SwingEngine(
-        SwingConfig()
-    ).detect(candles)
+    swings = SwingEngine(SwingConfig()).detect(candles)
 
     structures = MarketStructureEngine().analyze(swings)
 

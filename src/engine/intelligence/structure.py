@@ -38,9 +38,7 @@ class MarketStructureEngine:
         Analyze swing points and classify market structure.
         """
         confirmed_swings = [
-            swing
-            for swing in swings
-            if swing.status == SwingStatus.CONFIRMED
+            swing for swing in swings if swing.status == SwingStatus.CONFIRMED
         ]
 
         structures: list[StructurePoint] = []
@@ -48,14 +46,11 @@ class MarketStructureEngine:
         last_high: SwingPoint | None = None
         last_low: SwingPoint | None = None
 
-
         for swing in confirmed_swings:
-
             # -------------------------
             # HIGHS
             # -------------------------
             if swing.swing_type == SwingType.HIGH:
-
                 if last_high is None:
                     structure = StructureType.FIRST_HIGH
 
@@ -71,7 +66,6 @@ class MarketStructureEngine:
             # LOWS
             # -------------------------
             else:
-
                 if last_low is None:
                     structure = StructureType.FIRST_LOW
 

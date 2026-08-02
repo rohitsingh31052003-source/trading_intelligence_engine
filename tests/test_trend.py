@@ -58,6 +58,7 @@ def make_choch(
         reasons=[],
     )
 
+
 def assert_valid_evidence(result):
 
     assert result.evidence.total == result.confidence

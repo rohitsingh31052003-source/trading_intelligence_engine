@@ -25,6 +25,7 @@ class SwingStrength(Enum):
     STRONG = "STRONG"
     MAJOR = "MAJOR"
 
+
 class SwingStatus(Enum):
     """
     Current lifecycle stage of a swing.
@@ -32,6 +33,8 @@ class SwingStatus(Enum):
 
     CANDIDATE = "CANDIDATE"
     CONFIRMED = "CONFIRMED"
+
+
 @dataclass(slots=True, frozen=True)
 class SwingPoint:
     """
@@ -44,7 +47,7 @@ class SwingPoint:
     swing_type: SwingType
 
     confirmation_index: int
-    
+
     confirmed: bool
     status: SwingStatus
     strength: SwingStrength = SwingStrength.NORMAL

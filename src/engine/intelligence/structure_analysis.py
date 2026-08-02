@@ -38,9 +38,7 @@ class StructureAnalysisEngine:
                 bullish_sequence=0,
                 bearish_sequence=0,
                 structure_intact=False,
-                reasons=[
-                    "No confirmed market structure available."
-                ],
+                reasons=["No confirmed market structure available."],
             )
 
         bullish_sequence = 0
@@ -58,7 +56,6 @@ class StructureAnalysisEngine:
         # Count trend sequences
         # -----------------------------
         for point in structures:
-
             structure = point.structure
 
             if structure in (
@@ -85,11 +82,7 @@ class StructureAnalysisEngine:
 
         latest = structures[-1]
 
-        previous_structure = (
-            structures[-2]
-            if len(structures) >= 2
-            else None
-)
+        previous_structure = structures[-2] if len(structures) >= 2 else None
 
         structure_intact = False
 
@@ -97,11 +90,7 @@ class StructureAnalysisEngine:
         # Determine current bias
         # -----------------------------
         if len(structures) >= 3:
-
-            last_three = [
-                s.structure
-                for s in structures[-3:]
-            ]
+            last_three = [s.structure for s in structures[-3:]]
 
             # Bullish structure
             if last_three == [
@@ -109,15 +98,12 @@ class StructureAnalysisEngine:
                 StructureType.HIGHER_LOW,
                 StructureType.HIGHER_HIGH,
             ]:
-
                 current_bias = StructureBias.BULLISH
                 previous_bias = StructureBias.BULLISH
 
                 structure_intact = True
 
-                reasons = [
-                    "Bullish market structure remains intact."
-                ]
+                reasons = ["Bullish market structure remains intact."]
 
             # Bearish structure
             elif last_three == [
@@ -125,15 +111,12 @@ class StructureAnalysisEngine:
                 StructureType.LOWER_HIGH,
                 StructureType.LOWER_LOW,
             ]:
-
                 current_bias = StructureBias.BEARISH
                 previous_bias = StructureBias.BEARISH
 
                 structure_intact = True
 
-                reasons = [
-                    "Bearish market structure remains intact."
-                ]
+                reasons = ["Bearish market structure remains intact."]
 
             # Bullish -> Neutral
             elif (
@@ -143,15 +126,12 @@ class StructureAnalysisEngine:
                 in (
                     StructureType.HIGHER_HIGH,
                     StructureType.HIGHER_LOW,
-    )
+                )
             ):
-
                 previous_bias = StructureBias.BULLISH
                 current_bias = StructureBias.NEUTRAL
 
-                previous_protected_structure = (
-                current_protected_structure
-                )
+                previous_protected_structure = current_protected_structure
 
                 structure_intact = False
 
@@ -168,15 +148,12 @@ class StructureAnalysisEngine:
                 in (
                     StructureType.LOWER_LOW,
                     StructureType.LOWER_HIGH,
-    )
+                )
             ):
-
                 previous_bias = StructureBias.BEARISH
                 current_bias = StructureBias.NEUTRAL
 
-                previous_protected_structure = (
-                current_protected_structure
-                )
+                previous_protected_structure = current_protected_structure
 
                 structure_intact = False
 
@@ -186,15 +163,12 @@ class StructureAnalysisEngine:
                 ]
 
             else:
-
                 previous_bias = current_bias
                 current_bias = StructureBias.NEUTRAL
 
                 structure_intact = False
 
-                reasons = [
-                    "No confirmed bullish or bearish structure."
-                ]
+                reasons = ["No confirmed bullish or bearish structure."]
 
         return StructureAnalysis(
             previous_bias=previous_bias,
