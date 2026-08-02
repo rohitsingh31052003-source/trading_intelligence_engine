@@ -11,6 +11,7 @@ import yfinance as yf
 from engine.data.base_provider import BaseDataProvider
 from engine.models.ohlcv import OHLCVCandle
 from engine.data.normalizer import DataNormalizer
+from datetime import datetime, timedelta
 
 class YahooFinanceProvider(BaseDataProvider):
     """
@@ -46,8 +47,15 @@ class YahooFinanceProvider(BaseDataProvider):
             auto_adjust=False,
         )
 
+        if data.empty:
+            raise ValueError(
+                f"No market data returned for "
+                f"{symbol} between "
+                f"{start.date()} and {end.date()}."
+    )
+        print(f"Rows before normalization: {len(data)}")
         data = DataNormalizer.normalize(data)
-        
+        print(f"Rows after normalization : {len(data)}")
         # Flatten MultiIndex columns.
         if data.columns.nlevels > 1:
             data.columns = data.columns.get_level_values(0)
@@ -55,17 +63,25 @@ class YahooFinanceProvider(BaseDataProvider):
         candles: list[OHLCVCandle] = []
 
         for timestamp, row in data.iterrows():
+
+            timestamp = (
+                timestamp.to_pydatetime()
+                if hasattr(timestamp, "to_pydatetime")
+                else timestamp
+            )
+
             candles.append(
                 OHLCVCandle(
-                    timestamp=timestamp.to_pydatetime(),
+                    timestamp=timestamp,
                     open=float(row["Open"]),
                     high=float(row["High"]),
                     low=float(row["Low"]),
                     close=float(row["Close"]),
                     volume=float(row["Volume"]),
                 )
-            )
 
+            )
+    
         return candles
 
     def get_latest(
@@ -73,10 +89,14 @@ class YahooFinanceProvider(BaseDataProvider):
         symbol: str,
         interval: str,
     ) -> OHLCVCandle:
+
+        end = datetime.now()
+        start = end - timedelta(days=10)
+
         candles = self.get_history(
             symbol=symbol,
-            start=datetime.now(),
-            end=datetime.now(),
+            start=start,
+            end=end,
             interval=interval,
         )
 

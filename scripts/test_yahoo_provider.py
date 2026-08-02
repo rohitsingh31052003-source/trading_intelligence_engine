@@ -8,7 +8,7 @@ provider.connect()
 candles = provider.get_history(
     symbol="RELIANCE.NS",
     start=datetime(2025, 1, 1),
-    end=datetime(2025, 2, 1),
+    end=datetime(2025, 2, 10),
     interval="1d",
 )
 
