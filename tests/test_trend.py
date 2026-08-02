@@ -58,6 +58,18 @@ def make_choch(
         reasons=[],
     )
 
+def assert_valid_evidence(result):
+
+    assert result.evidence.total == result.confidence
+
+    assert 0 <= result.evidence.structure_score <= 30
+    assert 0 <= result.evidence.sequence_score <= 20
+    assert 0 <= result.evidence.bos_score <= 15
+    assert 0 <= result.evidence.choch_score <= 25
+    assert 0 <= result.evidence.quality_score <= 10
+
+    assert result.confidence <= 100
+
 
 def test_choch_bullish():
 
@@ -85,6 +97,7 @@ def test_choch_bullish():
     )
 
     assert result.state == TrendState.BULLISH
+    assert_valid_evidence(result)
 
 
 def test_choch_bearish():
@@ -113,6 +126,7 @@ def test_choch_bearish():
     )
 
     assert result.state == TrendState.BEARISH
+    assert_valid_evidence(result)
 
 
 def test_bos_only_transition():
@@ -144,6 +158,7 @@ def test_bos_only_transition():
     )
 
     assert result.state == TrendState.TRANSITION
+    assert_valid_evidence(result)
 
 
 def test_bullish_structure():
@@ -172,6 +187,7 @@ def test_bullish_structure():
     )
 
     assert result.state == TrendState.BULLISH
+    assert_valid_evidence(result)
 
 
 def test_bearish_structure():
@@ -200,6 +216,7 @@ def test_bearish_structure():
     )
 
     assert result.state == TrendState.BEARISH
+    assert_valid_evidence(result)
 
 
 def test_neutral_structure():
@@ -228,6 +245,7 @@ def test_neutral_structure():
     )
 
     assert result.state == TrendState.RANGING
+    assert_valid_evidence(result)
 
 
 def test_unknown_structure():
@@ -256,3 +274,4 @@ def test_unknown_structure():
     )
 
     assert result.state == TrendState.UNKNOWN
+    assert_valid_evidence(result)

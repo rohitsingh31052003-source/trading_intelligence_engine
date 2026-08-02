@@ -8,6 +8,7 @@ from engine.intelligence.structure import MarketStructureEngine
 from engine.intelligence.structure_analysis import StructureAnalysisEngine
 from engine.intelligence.swings import SwingEngine
 from engine.intelligence.trend import TrendEngine
+from engine.models import trend
 
 
 def main():
@@ -52,16 +53,21 @@ def main():
     print("=== Market Trend ===")
     print()
 
-    print(f"State          : {trend.state.name}")
-    print(f"Confidence     : {trend.confidence:.1f}")
-    print(f"Previous Bias  : {trend.previous_bias.name}")
-    print(f"Current Bias   : {trend.current_bias.name}")
+    print(f"State         : {trend.state.name}")
+    print(f"Confidence    : {trend.confidence}%")
 
     print()
-    print("Reasons:")
+    print("Evidence")
+    print()
 
-    for reason in trend.reasons:
-        print(f" - {reason}")
+    print(f"Structure     : {trend.evidence.structure_score}")
+    print(f"Sequence      : {trend.evidence.sequence_score}")
+    print(f"BOS           : {trend.evidence.bos_score}")
+    print(f"CHOCH         : {trend.evidence.choch_score}")
+    print(f"Quality       : {trend.evidence.quality_score}")
+
+    print("-----------------------")
+    print(f"Total         : {trend.evidence.total}")
 
 
 if __name__ == "__main__":

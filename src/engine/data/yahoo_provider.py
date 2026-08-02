@@ -53,9 +53,7 @@ class YahooFinanceProvider(BaseDataProvider):
                 f"{symbol} between "
                 f"{start.date()} and {end.date()}."
     )
-        print(f"Rows before normalization: {len(data)}")
         data = DataNormalizer.normalize(data)
-        print(f"Rows after normalization : {len(data)}")
         # Flatten MultiIndex columns.
         if data.columns.nlevels > 1:
             data.columns = data.columns.get_level_values(0)
