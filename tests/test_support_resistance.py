@@ -126,7 +126,7 @@ def test_initial_strength_is_30():
 
     levels = engine.detect(swings)
 
-    assert levels[0].strength == 30.0
+    assert levels[0].strength == 40.0
 
 
 def test_initial_touches_is_one():
@@ -237,4 +237,4 @@ def test_strength_increases_after_merge():
     levels = engine.detect(swings)
 
     assert levels[0].touches == 3
-    assert levels[0].strength == 40.0
+    assert levels[0].strength == 50.0

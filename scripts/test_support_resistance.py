@@ -46,11 +46,25 @@ def main():
         print()
 
         print(f"Price      : {level.price:.2f}")
-        print(f"Touches    : {level.touches}")
-        print(f"Strength   : {level.strength:.1f}")
         print(f"Status     : {level.status.name}")
+        print(f"Strength   : {level.strength:.1f}")
 
-        print("-" * 28)
+        print()
+        print("Evidence")
+        print()
+
+        print(f"Origin      : {level.evidence.origin_score:.1f}")
+        print(f"Defense     : {level.evidence.defense_score:.1f}")
+        print(f"Freshness   : {level.evidence.freshness_score:.1f}")
+        print(f"Touches     : {level.evidence.touch_score:.1f}")
+        print(f"Penalty     : {level.evidence.penalty_score:.1f}")
+
+        print("----------------------------")
+        print(f"Total       : {level.evidence.total:.1f}")
+
+        print()
+        print("-" * 40)
+        print()
 
 
 if __name__ == "__main__":

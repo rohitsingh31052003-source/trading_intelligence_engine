@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from engine.models.structural_level_evidence import (
+    StructuralLevelEvidence,
+)
 from engine.models.swing import SwingStrength
 
 
@@ -22,7 +25,7 @@ class LevelType(Enum):
 
 class LevelStatus(Enum):
     """
-    Current state of the structural level.
+    Current lifecycle stage of the structural level.
     """
 
     ACTIVE = "ACTIVE"
@@ -46,6 +49,23 @@ class StructuralLevel:
 
     touches: int
 
-    strength: float
+    successful_defenses: int
+
+    failed_tests: int
+
+    last_touch: datetime
+
+    broken_at: datetime | None
+
+    age_in_bars: int
 
     originating_strength: SwingStrength
+
+    evidence: StructuralLevelEvidence
+
+    @property
+    def strength(self) -> float:
+        """
+        Overall strength derived from evidence.
+        """
+        return self.evidence.total
