@@ -101,3 +101,22 @@ class YahooFinanceProvider(BaseDataProvider):
             raise ValueError("No latest candle available.")
 
         return candles[-1]
+
+    def fetch(
+        self,
+        symbol: str,
+        interval: str = "1d",
+        lookback_days: int = 180,
+    ):
+
+        self.connect()
+
+        end = datetime.now()
+        start = end - timedelta(days=lookback_days)
+
+        return self.get_history(
+            symbol=symbol,
+            start=start,
+            end=end,
+            interval=interval,
+    )
