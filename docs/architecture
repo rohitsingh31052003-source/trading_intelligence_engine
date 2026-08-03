@@ -1,0 +1,83 @@
+# Trading Intelligence Engine Architecture
+
+## Vision
+
+The Trading Intelligence Engine is a modular market analysis framework that transforms raw market data into structured trading intelligence.
+
+The project is designed around independent engines, where each engine has a single responsibility and produces immutable outputs for the next stage of the pipeline.
+
+---
+
+## High-Level Architecture
+
+```
+Market Data
+    │
+    ▼
+Data Layer
+│
+├── Providers
+├── Validation
+└── Normalization
+    │
+    ▼
+Analysis Layer
+│
+├── Swing Engine
+├── Market Structure
+├── Structure Analysis
+├── BOS
+├── CHOCH
+├── Trend
+├── Structural Levels
+├── Structural Strength
+├── Liquidity (Upcoming)
+├── Supply & Demand (Upcoming)
+├── Order Blocks (Upcoming)
+├── Fair Value Gaps (Upcoming)
+└── Decision Engine (Future)
+```
+
+---
+
+## Design Principles
+
+- Modular architecture
+- Immutable domain models
+- Pure business logic
+- Configuration-driven behavior
+- Test-first development
+- Evidence-based scoring
+- Independent intelligence engines
+
+---
+
+## Core Layers
+
+### Data Layer
+
+Responsible for obtaining and preparing market data.
+
+Responsibilities:
+
+- Download data
+- Normalize formats
+- Validate datasets
+
+---
+
+### Intelligence Layer
+
+Converts price action into structured market intelligence.
+
+Every engine:
+
+- receives immutable input
+- performs one responsibility
+- returns immutable output
+
+---
+
+### Decision Layer
+
+Future layer responsible for combining all intelligence into actionable trading decisions.

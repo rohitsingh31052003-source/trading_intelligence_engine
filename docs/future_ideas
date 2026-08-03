@@ -1,0 +1,59 @@
+# Future Ideas
+
+This document contains ideas that are intentionally outside the current roadmap.
+
+## Market Analysis
+
+- Volume Profile
+- Market Profile
+- VWAP
+- Anchored VWAP
+
+---
+
+## Smart Money Concepts
+
+- Liquidity Voids
+- Inducement
+- Breaker Blocks
+- Mitigation Blocks
+
+---
+
+## Derivatives
+
+- Options Open Interest
+- Gamma Exposure
+- Put/Call Ratio
+
+---
+
+## Machine Learning
+
+- Pattern Classification
+- Adaptive Scoring
+- Confidence Optimization
+
+---
+
+## AI Features
+
+- LLM Market Explanation
+- Natural Language Reports
+- Trade Journal Analysis
+
+---
+
+## Visualization
+
+- Interactive Charts
+- Heatmaps
+- Structure Timeline
+
+---
+
+## Risk Management
+
+- Position Sizing
+- Portfolio Risk Engine
+- Dynamic Stop Placement

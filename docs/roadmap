@@ -1,0 +1,78 @@
+# Project Roadmap
+
+## Phase 1 — Foundation ✅
+
+- Project architecture
+- Domain models
+- Configuration system
+- Testing framework
+
+---
+
+## Phase 2 — Market Structure ✅
+
+- Swing Engine
+- Market Structure
+- BOS
+- CHOCH
+- Trend Detection
+
+---
+
+## Phase 3 — Structural Levels ✅
+
+- Support & Resistance Detection
+- Structural Strength Scoring
+- Evidence-based Strength Model
+
+---
+
+## Phase 4 — Liquidity
+
+Planned:
+
+- Equal Highs
+- Equal Lows
+- Liquidity Pools
+- Liquidity Sweeps
+
+---
+
+## Phase 5 — Supply & Demand
+
+- Demand Zones
+- Supply Zones
+- Zone Validation
+
+---
+
+## Phase 6 — Order Blocks
+
+- Bullish Order Blocks
+- Bearish Order Blocks
+- Mitigation Detection
+
+---
+
+## Phase 7 — Fair Value Gaps
+
+- FVG Detection
+- Gap Filling
+- Gap Strength
+
+---
+
+## Phase 8 — Multi-Timeframe Analysis
+
+- HTF Bias
+- LTF Confirmation
+- Timeframe Alignment
+
+---
+
+## Phase 9 — Decision Engine
+
+- Trade Scoring
+- Risk Assessment
+- Signal Generation
+- Confidence Rating

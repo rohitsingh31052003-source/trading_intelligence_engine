@@ -1,0 +1,57 @@
+# Coding Standards
+
+## Domain Models
+
+- Use immutable dataclasses (`frozen=True`)
+- Use `slots=True`
+- Prefer properties over mutable fields
+- Keep models free of business logic
+
+---
+
+## Engines
+
+Each engine must:
+
+- Have one responsibility
+- Be deterministic
+- Avoid side effects
+- Return immutable results
+
+---
+
+## Configuration
+
+- No magic numbers
+- All thresholds belong in configuration objects
+
+---
+
+## Testing
+
+- Test-first whenever possible
+- Every helper should have unit tests
+- Cover edge cases
+- Prefer many small tests over few large tests
+
+---
+
+## Evidence Objects
+
+Every intelligence engine should expose evidence describing how conclusions were reached.
+
+Examples:
+
+- SwingEvidence
+- StructuralLevelEvidence
+- Future LiquidityEvidence
+
+---
+
+## Style
+
+- No print() inside engines
+- Clear function names
+- Small methods
+- Type hints everywhere
+- Prefer composition over inheritance

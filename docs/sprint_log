@@ -1,0 +1,56 @@
+# Sprint Log
+
+## Sprint 1–5
+
+- Project setup
+- Initial architecture
+- Testing framework
+- Core domain models
+
+---
+
+## Sprint 6
+
+Completed:
+
+- Swing Engine
+
+Testing:
+
+- Swing detection
+- Swing quality
+
+---
+
+## Sprint 7
+
+Completed:
+
+- Market Structure
+- Break of Structure (BOS)
+- Change of Character (CHOCH)
+- Trend Engine
+
+---
+
+## Sprint 8
+
+Completed:
+
+- Trend Evidence
+- Structure Analysis
+
+Expanded automated test coverage.
+
+---
+
+## Sprint 9
+
+Completed:
+
+- Structural Levels
+- Level Merging
+- Structural Strength
+- Evidence-based scoring
+
+Current test suite fully passing.

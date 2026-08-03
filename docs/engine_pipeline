@@ -1,0 +1,62 @@
+# Engine Pipeline
+
+The Trading Intelligence Engine processes market data through a sequence of independent intelligence engines.
+
+```
+Yahoo Finance
+      │
+      ▼
+Normalizer
+      │
+      ▼
+Validator
+      │
+      ▼
+Swing Engine
+      │
+      ▼
+Market Structure
+      │
+      ▼
+Structure Analysis
+      │
+      ▼
+Break of Structure (BOS)
+      │
+      ▼
+Change of Character (CHOCH)
+      │
+      ▼
+Trend Engine
+      │
+      ▼
+Structural Levels
+      │
+      ▼
+Structural Strength
+      │
+      ▼
+Liquidity (Future)
+      │
+      ▼
+Supply & Demand (Future)
+      │
+      ▼
+Order Blocks (Future)
+      │
+      ▼
+Fair Value Gaps (Future)
+      │
+      ▼
+Decision Engine
+```
+
+## Pipeline Philosophy
+
+Each engine:
+
+- performs one responsibility
+- receives immutable input
+- returns immutable output
+- never modifies previous stages
+- can be tested independently
