@@ -7,24 +7,29 @@ from enum import Enum
 from engine.models.liquidity import LiquidityPool
 
 
-class LiquiditySweepType(Enum):
+class LiquidityEventType(Enum):
+
     NONE = "NONE"
-    BUY_SIDE = "BUY_SIDE"
-    SELL_SIDE = "SELL_SIDE"
+
+    SWEEP = "SWEEP"
+
+    BREAKOUT = "BREAKOUT"
+
+    FAILED_BREAKOUT = "FAILED_BREAKOUT"
 
 
 @dataclass(slots=True, frozen=True)
-class LiquiditySweep:
+class LiquidityEvent:
 
     pool: LiquidityPool
 
     detected: bool
 
-    sweep_type: LiquiditySweepType
+    event_type: LiquidityEventType
 
-    sweep_price: float | None
+    event_price: float | None
 
-    sweep_timestamp: datetime | None
+    event_timestamp: datetime | None
 
     confidence: float
 

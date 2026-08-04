@@ -23,6 +23,11 @@ class BaseDataProvider(MarketDataProvider):
         """Return the provider name."""
         return self._provider_name
 
+    @property
+    def connected(self) -> bool:
+        """Return whether the provider is connected."""
+        return self._connected
+
     def is_available(self) -> bool:
         """Return provider availability."""
         return self._connected

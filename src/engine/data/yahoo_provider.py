@@ -4,14 +4,14 @@ Yahoo Finance market data provider.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+import math
 
 import yfinance as yf
 
 from engine.data.base_provider import BaseDataProvider
 from engine.models.ohlcv import OHLCVCandle
 from engine.data.normalizer import DataNormalizer
-from datetime import datetime, timedelta
 
 
 class YahooFinanceProvider(BaseDataProvider):
@@ -55,9 +55,17 @@ class YahooFinanceProvider(BaseDataProvider):
                 f"{start.date()} and {end.date()}."
             )
         data = DataNormalizer.normalize(data)
+
+        data = data.dropna(
+            subset=[
+                "Open",
+                "High",
+                "Low",
+                "Close",
+                "Volume",
+    ]
+)
         # Flatten MultiIndex columns.
-        if data.columns.nlevels > 1:
-            data.columns = data.columns.get_level_values(0)
 
         candles: list[OHLCVCandle] = []
 
@@ -68,16 +76,34 @@ class YahooFinanceProvider(BaseDataProvider):
                 else timestamp
             )
 
+            open_price = float(row["Open"])
+            high_price = float(row["High"])
+            low_price = float(row["Low"])
+            close_price = float(row["Close"])
+            volume = float(row["Volume"])
+
+            if any(
+                math.isnan(v)
+                for v in (
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume,
+    )
+):
+                continue
+
             candles.append(
                 OHLCVCandle(
                     timestamp=timestamp,
-                    open=float(row["Open"]),
-                    high=float(row["High"]),
-                    low=float(row["Low"]),
-                    close=float(row["Close"]),
-                    volume=float(row["Volume"]),
-                )
-            )
+                    open=open_price,
+                    high=high_price,
+                    low=low_price,
+                    close=close_price,
+                    volume=volume,
+    )
+)
 
         return candles
 
@@ -88,7 +114,9 @@ class YahooFinanceProvider(BaseDataProvider):
     ) -> OHLCVCandle:
 
         end = datetime.now()
-        start = end - timedelta(days=10)
+        if interval == "1d":
+            end -= timedelta(days=1)
+            start = end - timedelta(days=10)
 
         candles = self.get_history(
             symbol=symbol,
@@ -109,10 +137,13 @@ class YahooFinanceProvider(BaseDataProvider):
         lookback_days: int = 180,
     ):
 
-        self.connect()
+        if not self.connected:
+            self.connect()
 
         end = datetime.now()
-        start = end - timedelta(days=lookback_days)
+        if interval == "1d":
+            end -= timedelta(days=1)
+            start = end - timedelta(days=lookback_days)
 
         return self.get_history(
             symbol=symbol,
