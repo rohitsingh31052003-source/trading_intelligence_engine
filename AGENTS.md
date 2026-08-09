@@ -3,7 +3,7 @@
 ## Repository
 - Path: `/workspace/project/trading_intelligence_engine`
 - Package layout: `src/` (setuptools `package-dir = {"" = "src"}`), `pythonpath = ["src"]` in pytest config.
-- All `__init__.py` files are intentionally EMPTY (no re-exports). Import via full paths, e.g. `from engine.intelligence.signal import SignalEngine`.
+- `__init__.py` convention: the engine/data/models/config/utils/core packages have INTENTIONALLY EMPTY `__init__.py` files (no re-exports) — import via full paths, e.g. `from engine.intelligence.signal import SignalEngine`. The orchestration packages are the EXCEPTION: `src/engine/pipeline/__init__.py` (Sprint 11F) and `src/engine/reporting/__init__.py` (Sprint 11G) re-export their public API for convenience, e.g. `from engine.pipeline import HistoricalEvaluationPipeline, trending_dataset` and `from engine.reporting import EvaluationReportEngine`.
 - Python >= 3.11 (env runs 3.13). Tests: `python -m pytest -q`. No conftest.
 
 ## Engine public APIs (verified Sprint 11F)
@@ -33,5 +33,16 @@
 - No print() inside engines. Type hints everywhere. Composition over inheritance.
 - Demos in `scripts/test_*.py` insert `src` onto sys.path.
 
+## Sprint 11G — Evaluation Reporting Layer (added)
+- New package `src/engine/reporting/` sits ABOVE the pipeline (dependency: models ← intelligence ← pipeline ← reporting).
+- `src/engine/models/evaluation.py`: frozen+slots `PipelineStatistics`, `SignalStatistics`, `TradeStatistics`, `EvaluationReport`.
+- `src/engine/reporting/evaluation.py`: `EvaluationReportEngine().analyze(result: PipelineResult, label="", metadata=None) -> EvaluationReport`. Stateless, deterministic, additive. NO existing engine/model modified.
+- `EvaluationReport` bundles three independent views: pipeline funnel, signal-generation stats, completed-trade stats. Retains raw `PipelineResult` by reference (`report.result`) for future comparison/robustness/Monte Carlo layers. `label` + `metadata` Mapping[str,str] identify a run.
+- Trade stats are DELEGATED, not recomputed: `TradeStatistics.from_performance(result.performance)` projects the existing `PerformanceAnalytics`. No analytics logic duplicated.
+- Terminal validation statuses (for `validations_completed`): WIN, LOSS, EXPIRED, AMBIGUOUS, NOT_TRIGGERED. OPEN excluded (window ran out, unresolved).
+- `result.signals` tuple = generated (non-suppressed) signals only; suppressed signals live on `PipelineEvaluationPoint.suppressed`. `eligible_signals` (== eligible_decisions) == total_signals + suppressed_signals.
+- `scripts/test_evaluation.py`: demo. `tests/test_evaluation.py`: 35 tests.
+
 ## Test baseline
 - Pre-11F: 290 passed. Post-11F: 320 passed (30 new in tests/test_pipeline.py).
+- Post-11G: 355 passed (35 new in tests/test_evaluation.py).
