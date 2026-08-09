@@ -152,9 +152,42 @@ class RegimeStatistics:
     average_mfe: float
     average_mae: float
 
+    # Sprint 11I: regime robustness metadata. Defaults preserve
+    # backward compatibility. ``sufficient_observations`` is
+    # False for regimes with fewer than the configured minimum
+    # completed trades; it is independent of ``completed_trades``
+    # so a regime with zero trades is never reported as "zero
+    # performance" -- it is reported as insufficient.
+    sufficient_observations: bool = False
+    min_observations_for_inference: int = 0
+
     @property
     def has_completed_trades(self) -> bool:
         return self.completed_trades > 0
+
+    @property
+    def has_no_completed_trades(self) -> bool:
+        """
+        A regime with no completed trades. This is distinct from
+        a regime whose observed expectancy happens to be zero:
+        zero trades means no evidence, not zero performance.
+        """
+
+        return self.completed_trades == 0
+
+    @property
+    def is_profitable(self) -> bool:
+        """
+        A regime is profitable only when it has completed trades
+        AND a positive total R. Zero-trade regimes are NOT
+        profitable (nor unprofitable) -- they are unobserved.
+        """
+
+        return self.completed_trades > 0 and self.total_r > 0.0
+
+    @property
+    def is_unprofitable(self) -> bool:
+        return self.completed_trades > 0 and self.total_r < 0.0
 
 
 # ============================================================
@@ -374,6 +407,28 @@ class OutOfSampleReport:
 
     sufficient_data: bool = False
 
+    # Sprint 11I: explicit development / evaluation window
+    # metadata so the leakage audit can verify separation.
+    # ``None`` means the windows were not declared; the audit
+    # then reports the separation as NOT VERIFIED rather than
+    # PASS. ``parameter_selection_isolated`` is True only when
+    # the caller can prove parameter selection touched only the
+    # development window.
+    #
+    # Consistency note: the legacy ``OutOfSampleEngine`` performs
+    # NO parameter selection, so it leaves
+    # ``parameter_selection_isolated`` as ``None`` (NOT VERIFIED
+    # by the legacy OOS path). When a Sprint 11I walk-forward
+    # selection supplies a structural proof, the orchestrator
+    # (``ResearchEngine``) upgrades ``parameter_selection_isolated``
+    # to ``True`` AND records the proof source in
+    # ``selection_isolation_verified_by`` so the report never
+    # silently claims verification it did not perform itself.
+    development_window: tuple[int, int] | None = None
+    evaluation_window: tuple[int, int] | None = None
+    parameter_selection_isolated: bool | None = None
+    selection_isolation_verified_by: str | None = None
+
     @property
     def has_in_sample_trades(self) -> bool:
         perf = self.in_sample_performance
@@ -394,6 +449,60 @@ class OutOfSampleReport:
 # ============================================================
 
 
+class LeakageSeverity(Enum):
+    """
+    Severity of a single leakage audit check.
+
+    PASS
+        The invariant was evaluated and held.
+
+    WARNING
+        The invariant held but a non-critical concern was
+        surfaced (e.g. limited data made the check weak).
+
+    NOT_VERIFIED
+        The audit could not verify the invariant. The audit
+        NEVER reports PASS for a property it could not prove;
+        it reports NOT_VERIFIED instead.
+
+    FAILURE
+        The invariant was evaluated and violated.
+    """
+
+    PASS = "PASS"
+    WARNING = "WARNING"
+    NOT_VERIFIED = "NOT_VERIFIED"
+    FAILURE = "FAILURE"
+
+
+@dataclass(frozen=True)
+class LeakageCheck:
+    """
+    A single structured leakage-audit check.
+
+    Each check has an explainable ``name``, a ``severity``, a
+    ``reason`` and a ``passed`` flag. ``passed`` is True only
+    when the check was evaluated and held (severity PASS or
+    WARNING). NOT_VERIFIED and FAILURE checks are not ``passed``.
+
+    The structured form lets downstream tooling present the
+    audit deterministically without parsing free-text strings.
+    """
+
+    name: str
+    severity: LeakageSeverity
+    reason: str
+    passed: bool
+
+    @property
+    def is_failure(self) -> bool:
+        return self.severity is LeakageSeverity.FAILURE
+
+    @property
+    def is_not_verified(self) -> bool:
+        return self.severity is LeakageSeverity.NOT_VERIFIED
+
+
 @dataclass(frozen=True)
 class LeakageCheckResult:
     """
@@ -407,23 +516,41 @@ class LeakageCheckResult:
     Field semantics:
 
     passed
-        True only when ``failures`` is empty.
+        True only when ``failures`` is empty. NOT_VERIFIED
+        items do not fail the audit, but they are surfaced so
+        no property is falsely reported as safe.
 
     checks_performed
-        Number of invariants that were evaluated.
+        Number of invariants that were actually evaluated. Checks
+        that could not be performed (because the required
+        context was not supplied) are counted in
+        ``not_verified`` instead.
 
     failures
-        Human-readable descriptions of failed checks.
+        Human-readable descriptions of failed checks
+        (severity FAILURE).
 
     warnings
         Human-readable warnings for checks that could not be
-        fully verified (e.g. insufficient data).
+        fully verified or that surfaced a non-critical concern.
+
+    not_verified
+        Human-readable descriptions of properties the audit
+        could not verify. These are never silently promoted to
+        PASS.
+
+    checks
+        Structured per-check results. Backward-compatible:
+        older callers can continue to use ``failures`` /
+        ``warnings`` / ``passed``.
     """
 
     passed: bool
     checks_performed: int
     failures: tuple[str, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    not_verified: tuple[str, ...] = field(default_factory=tuple)
+    checks: tuple[LeakageCheck, ...] = field(default_factory=tuple)
 
     @property
     def has_failures(self) -> bool:
@@ -432,6 +559,10 @@ class LeakageCheckResult:
     @property
     def has_warnings(self) -> bool:
         return bool(self.warnings)
+
+    @property
+    def has_not_verified(self) -> bool:
+        return bool(self.not_verified)
 
 
 # ============================================================
@@ -468,8 +599,23 @@ class ResearchReport:
     parameter_sensitivity
         Stability information across a swept parameter.
 
+    parameter_robustness
+        Robustness analysis distinguishing the descriptive best
+        configuration from stable / robust configurations
+        (Sprint 11I).
+
+    walk_forward_selection
+        Walk-forward parameter selection result that explicitly
+        separates candidate evaluation (development data only),
+        selected configuration, and out-of-sample evaluation of
+        the selected configuration (Sprint 11I).
+
     out_of_sample
         In-sample vs out-of-sample comparison.
+
+    data_sufficiency
+        Sample-size awareness across trades, regimes, OOS and
+        parameter observations (Sprint 11I).
 
     leakage
         Data-leakage audit result.
@@ -477,7 +623,8 @@ class ResearchReport:
     conclusions
         Descriptive, non-predictive conclusions. The engine
         never claims the strategy "is profitable"; it reports
-        what was observed.
+        what was observed. Descriptive findings are labelled
+        separately from validated findings.
     """
 
     label: str
@@ -492,7 +639,13 @@ class ResearchReport:
 
     parameter_sensitivity: ParameterSensitivityReport | None = None
 
+    parameter_robustness: "ParameterRobustnessReport | None" = None
+
+    walk_forward_selection: "WalkForwardSelectionReport | None" = None
+
     out_of_sample: OutOfSampleReport | None = None
+
+    data_sufficiency: "DataSufficiencyReport | None" = None
 
     leakage: LeakageCheckResult | None = None
 
@@ -506,4 +659,321 @@ class ResearchReport:
     def has_regime_data(self) -> bool:
         return any(
             rs.total_results > 0 for rs in self.regime_statistics
+        )
+
+
+# ============================================================
+# PARAMETER ROBUSTNESS (Sprint 11I)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class ConfigurationRobustness:
+    """
+    Robustness assessment for a single parameter configuration.
+
+    Distinguishes DESCRIPTIVE BEST from ROBUST / STABLE:
+
+    profitable
+        The configuration produced positive total R AND at
+        least ``min_completed_trades`` completed trades. A
+        configuration with no trades is never "profitable".
+
+    near_median
+        The configuration's expectancy lies within the
+        robustness band of the median expectancy. The band is
+        configurable and intentionally transparent.
+
+    stable
+        ``profitable AND near_median``. A stable configuration
+        is one that is both economically positive and not an
+        outlier relative to the rest of the sweep.
+
+    The descriptive best (highest expectancy) is NOT
+    automatically stable; that distinction is captured by
+    ``ParameterRobustnessReport.descriptive_best_is_robust``.
+    """
+
+    parameter_value: Any
+    expectancy: float
+    total_r: float
+    completed_trades: int
+    profitable: bool
+    near_median: bool
+    stable: bool
+
+
+@dataclass(frozen=True)
+class ParameterRobustnessReport:
+    """
+    Robustness analysis across a swept parameter (Sprint 11I).
+
+    This report is deliberately distinct from
+    ``ParameterSensitivityReport``: sensitivity describes how
+    much performance varies; robustness describes which
+    configurations are reliable enough to trust, and whether the
+    result is overly dependent on a single configuration.
+
+    Field semantics:
+
+    descriptive_best
+        The parameter value with the highest historical
+        expectancy. DESCRIPTIVE ONLY -- never predictive.
+
+    descriptive_best_is_robust
+        Whether the descriptive best is also a stable
+        configuration. When False, the best historical result
+        is an outlier and must not be treated as a robust choice.
+
+    robust_configurations
+        Parameter values that are stable (profitable AND
+        near the median). These are the only configurations
+        the report is willing to call "robust".
+
+    unstable_configurations
+        Parameter values that are NOT stable.
+
+    highly_dependent_on_single_config
+        True when the entire sweep's positive result rests on a
+        single configuration (e.g. only one profitable config,
+        or only one stable config in a multi-config sweep).
+
+    robust
+        Whether at least one robust configuration exists AND
+        there is sufficient data to make the statement.
+    """
+
+    parameter_name: str
+    configurations: tuple[ConfigurationRobustness, ...] = field(
+        default_factory=tuple,
+    )
+
+    descriptive_best: Any = None
+    descriptive_best_is_robust: bool = False
+
+    robust_configurations: tuple[Any, ...] = field(default_factory=tuple)
+    unstable_configurations: tuple[Any, ...] = field(default_factory=tuple)
+
+    median_expectancy: float = 0.0
+    expectancy_band: float = 0.0
+
+    highly_dependent_on_single_config: bool = False
+    sufficient_data: bool = False
+    robust: bool = False
+
+    @property
+    def configuration_count(self) -> int:
+        return len(self.configurations)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.configurations
+
+
+# ============================================================
+# WALK-FORWARD PARAMETER SELECTION (Sprint 11I)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class CandidateResult:
+    """
+    Development-window performance for one candidate parameter
+    configuration.
+
+    The performance is computed EXCLUSIVELY from the development
+    window; the evaluation (out-of-sample) window is never
+    supplied during candidate evaluation.
+    """
+
+    parameter_value: Any
+    development_performance: Any
+    development_completed_trades: int
+    development_expectancy: float
+    development_total_r: float
+    sufficient_development_trades: bool
+
+
+@dataclass(frozen=True)
+class SelectedConfiguration:
+    """
+    The configuration selected for out-of-sample evaluation.
+
+    Selection is performed using DEVELOPMENT data only. The
+    ``selection_basis`` documents the (descriptive) criterion
+    used; the report never claims the selected configuration is
+    predictive.
+    """
+
+    parameter_value: Any
+    selection_basis: str
+    development_expectancy: float
+    selected_from_development_data: bool
+    selected_index: int
+
+
+@dataclass(frozen=True)
+class WalkForwardSelectionReport:
+    """
+    Full walk-forward parameter selection + evaluation result.
+
+    This model makes the development / evaluation separation
+    EXPLICIT and auditable:
+
+    candidates
+        Per-candidate development-window results. The evaluation
+        window was never seen during candidate evaluation.
+
+    selected
+        The selected configuration, chosen from development data
+        only.
+
+    out_of_sample_result
+        The pipeline result of evaluating the SELECTED
+        configuration on the evaluation window only.
+
+    development_window / evaluation_window
+        Half-open index ranges ``[start, end)`` of the two
+        non-overlapping windows.
+
+    selection_isolated_from_evaluation
+        True by construction: the engine never passes evaluation
+        candles to candidate evaluation. This is a structural
+        guarantee, not a statistical one.
+
+    selection_verified
+        Whether the audit can PROVE the selection was isolated.
+        True when the engine performed the selection itself
+        (structural proof); may be False/NOT_VERIFIED when
+        selection was supplied externally.
+    """
+
+    parameter_name: str
+    candidates: tuple[CandidateResult, ...] = field(
+        default_factory=tuple,
+    )
+    selected: SelectedConfiguration | None = None
+
+    out_of_sample_result: Any = None
+    out_of_sample_performance: Any = None
+    out_of_sample_completed_trades: int = 0
+
+    development_window: tuple[int, int] = (0, 0)
+    evaluation_window: tuple[int, int] = (0, 0)
+
+    development_candle_count: int = 0
+    evaluation_candle_count: int = 0
+
+    selection_isolated_from_evaluation: bool = True
+    selection_verified: bool = True
+
+    # Sprint 11I consistency: these fields describe WINDOW SIZE
+    # sufficiency (enough candles in the development / evaluation
+    # window), NOT completed-trade sufficiency. The names are
+    # explicit to avoid confusion with DataSufficiencyReport's
+    # trade-count thresholds (``insufficient_oos_trades`` etc.).
+    sufficient_development_window: bool = False
+    sufficient_evaluation_window: bool = False
+
+    # Backward-compatible aliases (Sprint 11I rename). The legacy
+    # ``sufficient_development_data`` / ``sufficient_evaluation_data``
+    # names were ambiguous about whether "data" meant candles or
+    # trades; they now proxy to the explicit window-sufficiency
+    # fields. Read-only.
+    @property
+    def sufficient_development_data(self) -> bool:
+        return self.sufficient_development_window
+
+    @property
+    def sufficient_evaluation_data(self) -> bool:
+        return self.sufficient_evaluation_window
+
+    @property
+    def has_selected(self) -> bool:
+        return self.selected is not None
+
+    @property
+    def windows_overlap(self) -> bool:
+        """Whether the declared windows overlap (should be False)."""
+
+        dev_start, dev_end = self.development_window
+        eval_start, _ = self.evaluation_window
+        return dev_end > eval_start and dev_end > dev_start
+
+    @property
+    def has_out_of_sample_trades(self) -> bool:
+        return self.out_of_sample_completed_trades > 0
+
+
+# ============================================================
+# DATA SUFFICIENCY (Sprint 11I)
+# ============================================================
+
+
+@dataclass(frozen=True)
+class DataSufficiencyReport:
+    """
+    Sample-size awareness for a research run (Sprint 11I).
+
+    The system must never imply statistical confidence from tiny
+    samples. This report makes the sufficiency of each evidence
+    source explicit and configurable. All thresholds are stored
+    on the report so callers can audit the decision boundaries.
+
+    Field semantics:
+
+    sufficient_trades
+        Whether the overall run had at least
+        ``min_trades_for_inference`` completed trades.
+
+    insufficient_regime_samples
+        Whether ANY observed regime had fewer than
+        ``min_regime_observations`` completed trades (when that
+        regime had any results at all). Zero-trade regimes are
+        reported as insufficient, not as zero-performance.
+
+    insufficient_oos_trades
+        Whether the out-of-sample window had fewer than
+        ``min_oos_trades`` completed trades (when an OOS
+        evaluation was performed).
+
+    insufficient_parameter_observations
+        Whether the parameter sweep had fewer than
+        ``min_parameter_configurations`` configurations.
+
+    sufficient_for_inference
+        Overall: True only when ``sufficient_trades`` is True AND
+        no insufficiency flag is set. This is the single flag a
+        cautious caller should gate on before drawing any
+        conclusion.
+    """
+
+    completed_trades: int
+    min_trades_for_inference: int
+
+    sufficient_trades: bool
+    insufficient_trades: bool
+
+    insufficient_regime_samples: bool
+    insufficient_oos_trades: bool
+    insufficient_parameter_observations: bool
+
+    min_regime_observations: int
+    min_oos_trades: int
+    min_parameter_configurations: int
+
+    oos_completed_trades: int
+    parameter_configurations: int
+    regimes_with_trades: int
+    regimes_sufficient: int
+
+    summary: str
+
+    @property
+    def sufficient_for_inference(self) -> bool:
+        return (
+            self.sufficient_trades
+            and not self.insufficient_regime_samples
+            and not self.insufficient_oos_trades
+            and not self.insufficient_parameter_observations
         )

@@ -179,6 +179,14 @@ class OutOfSampleEngine:
             drawdown_change=drawdown_change,
             trade_count_change=trade_count_change,
             sufficient_data=sufficient,
+            development_window=(0, split_index),
+            evaluation_window=(split_index, total),
+            # The simple OOS engine performs NO parameter selection,
+            # so it cannot prove selection isolation. ``None`` means
+            # NOT VERIFIED by the leakage audit (Sprint 11I). Use the
+            # WalkForwardParameterEngine for a structurally-proven
+            # selection-isolated OOS path.
+            parameter_selection_isolated=None,
         )
 
     # ========================================================
