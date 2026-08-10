@@ -23,11 +23,19 @@ from engine.models.evaluation import (
     SignalStatistics,
     TradeStatistics,
 )
+from engine.reporting.comparison import (
+    ExperimentComparisonFormatter,
+)
 from engine.reporting.evaluation import EvaluationReportEngine
+from engine.reporting.experiment import (
+    ExperimentReportFormatter,
+)
 
 __all__ = [
     "EvaluationReport",
     "EvaluationReportEngine",
+    "ExperimentComparisonFormatter",
+    "ExperimentReportFormatter",
     "PipelineStatistics",
     "SignalStatistics",
     "TradeStatistics",
