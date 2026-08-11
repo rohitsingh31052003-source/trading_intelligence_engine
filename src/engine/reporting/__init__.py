@@ -1,13 +1,14 @@
 """
-Evaluation reporting layer (Sprint 11G + 11J + 11L).
+Evaluation reporting layer (Sprint 11G + 11J + 11L + 11M).
 
 This package sits ABOVE the historical evaluation pipeline
 (Sprint 11F). It turns a ``PipelineResult`` into a structured,
 reusable, immutable ``EvaluationReport`` suitable for comparing
 historical runs and eventually supporting strategy research. It
 also hosts the experiment comparison / report formatters
-(Sprint 11J) and the experiment query / grouping / analysis
-formatters (Sprint 11L).
+(Sprint 11J), the experiment query / grouping / analysis
+formatters (Sprint 11L) and the experiment suite / suite
+comparison formatters (Sprint 11M).
 
 Dependency direction:
 
@@ -26,6 +27,8 @@ Dependency direction:
     registry / persistence
        ↑
     query / filtering / analysis
+       ↑
+    suite / batch orchestration
 """
 
 from engine.models.evaluation import (
@@ -46,6 +49,10 @@ from engine.reporting.query import (
     ExperimentGroupingFormatter,
     ExperimentQueryFormatter,
 )
+from engine.reporting.suite import (
+    SuiteComparisonFormatter,
+    SuiteReportFormatter,
+)
 
 __all__ = [
     "EvaluationReport",
@@ -57,5 +64,7 @@ __all__ = [
     "ExperimentReportFormatter",
     "PipelineStatistics",
     "SignalStatistics",
+    "SuiteComparisonFormatter",
+    "SuiteReportFormatter",
     "TradeStatistics",
 ]
