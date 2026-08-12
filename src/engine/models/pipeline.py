@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from engine.models.candle_pattern import CandlePattern
 from engine.models.performance import PerformanceAnalytics
 from engine.models.signal import SignalResult
 from engine.models.validation import ValidationResult
@@ -61,6 +62,15 @@ class PipelineEvaluationPoint:
     reason: str = ""
 
     suppressed: bool = False
+
+    # Candle / price-action patterns whose triggering candle is
+    # at this evaluation index, computed from candles[:T+1].
+    # Additive evidence only; it is NOT consumed by the existing
+    # confluence/decision/signal logic, so existing behaviour is
+    # preserved.
+    patterns: tuple[CandlePattern, ...] = field(
+        default_factory=tuple,
+    )
 
     @property
     def produced_signal(self) -> bool:
@@ -146,6 +156,15 @@ class PipelineResult:
     )
 
     validation_results: tuple[ValidationResult, ...] = field(
+        default_factory=tuple,
+    )
+
+    # Every candle pattern detected across the walk-forward
+    # evaluation. Each pattern is attributed to the index of its
+    # triggering candle and was computed using only
+    # candles[:index+1]. Additive evidence; not consumed by the
+    # existing signal/decision logic.
+    patterns: tuple[CandlePattern, ...] = field(
         default_factory=tuple,
     )
 

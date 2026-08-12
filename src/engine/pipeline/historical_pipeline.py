@@ -69,9 +69,13 @@ from engine.config.liquidity_event_config import (
     LiquidityEventConfig,
 )
 from engine.config.swing_config import SwingConfig
+from engine.config.candle_pattern_config import (
+    CandlePatternConfig,
+)
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
+from engine.intelligence.candle_patterns import CandlePatternEngine
 from engine.intelligence.decision import DecisionEngine
 from engine.intelligence.liquidity import LiquidityEngine
 from engine.intelligence.liquidity_event import (
@@ -189,6 +193,15 @@ class PipelineConfig:
         default_factory=LiquidityEventConfig,
     )
 
+    # Candle / price-action pattern configuration (Sprint 11O).
+    # The pattern engine runs additively: its evidence is
+    # attached to each evaluation point but is NOT fed into the
+    # existing confluence/decision/signal logic, so existing
+    # behaviour is preserved.
+    candle_pattern_config: CandlePatternConfig = field(
+        default_factory=CandlePatternConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -233,6 +246,9 @@ class HistoricalEvaluationPipeline:
         self._signal_engine = SignalEngine()
         self._validation_engine = SignalValidationEngine()
         self._performance_engine = PerformanceAnalyticsEngine()
+        self._pattern_engine = CandlePatternEngine(
+            self.config.candle_pattern_config,
+        )
 
     # ========================================================
     # PUBLIC API
@@ -263,6 +279,7 @@ class HistoricalEvaluationPipeline:
         points: list[PipelineEvaluationPoint] = []
         signals: list = []
         validations: list = []
+        all_patterns: list = []
 
         eligible_decisions = 0
         signals_generated = 0
@@ -296,6 +313,23 @@ class HistoricalEvaluationPipeline:
 
             trigger_candle = visible[-1]
 
+            # ---------------------------------------------
+            # CANDLE / PRICE-ACTION PATTERNS (Sprint 11O)
+            #
+            # Additive evidence only. Computed from the visible
+            # slice (candles[:t+1]) and attached to this point.
+            # The patterns attributed to index t use only
+            # candles[t-1] and candles[t]; no future candle is
+            # read. This evidence is NOT fed into the confluence
+            # /decision/signal engines below, so existing signal
+            # behaviour is unchanged.
+            # ---------------------------------------------
+            detected = self._pattern_engine.detect(visible)
+            patterns_at_t = tuple(
+                p for p in detected if p.index == t
+            )
+            all_patterns.extend(patterns_at_t)
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -310,6 +344,7 @@ class HistoricalEvaluationPipeline:
                         signal,
                         validation,
                         reason,
+                        patterns=patterns_at_t,
                     )
                 )
                 continue
@@ -400,6 +435,7 @@ class HistoricalEvaluationPipeline:
                             None,
                             reason,
                             suppressed=True,
+                            patterns=patterns_at_t,
                         )
                     )
                     continue
@@ -464,6 +500,7 @@ class HistoricalEvaluationPipeline:
                     signal,
                     validation,
                     reason,
+                    patterns=patterns_at_t,
                 )
             )
 
@@ -480,6 +517,7 @@ class HistoricalEvaluationPipeline:
             evaluation_points_sequence=tuple(points),
             signals=tuple(signals),
             validation_results=tuple(validations),
+            patterns=tuple(all_patterns),
             performance=performance,
         )
 
@@ -606,6 +644,7 @@ class HistoricalEvaluationPipeline:
         validation,
         reason: str,
         suppressed: bool = False,
+        patterns: tuple = (),
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -618,6 +657,7 @@ class HistoricalEvaluationPipeline:
             validation=validation,
             reason=reason,
             suppressed=suppressed,
+            patterns=patterns,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:
