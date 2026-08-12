@@ -72,6 +72,7 @@ from engine.config.swing_config import SwingConfig
 from engine.config.candle_pattern_config import (
     CandlePatternConfig,
 )
+from engine.config.market_context_config import MarketContextConfig
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
@@ -81,6 +82,7 @@ from engine.intelligence.liquidity import LiquidityEngine
 from engine.intelligence.liquidity_event import (
     LiquidityEventEngine,
 )
+from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.performance import (
     PerformanceAnalyticsEngine,
 )
@@ -202,6 +204,19 @@ class PipelineConfig:
         default_factory=CandlePatternConfig,
     )
 
+    # Market context configuration (Sprint 11P).
+    # ``enable_market_context`` toggles the additive market-context
+    # intelligence. When enabled, a descriptive ``MarketContext``
+    # (trend / range / support-resistance) is computed from
+    # candles[:T+1] and attached to each evaluation point. It is NOT
+    # fed into the existing confluence/decision/signal logic, so
+    # existing signal / trade behaviour is preserved. Disabling it
+    # reproduces the pre-11P pipeline exactly (market_context=None).
+    enable_market_context: bool = True
+    market_context_config: MarketContextConfig = field(
+        default_factory=MarketContextConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -248,6 +263,17 @@ class HistoricalEvaluationPipeline:
         self._performance_engine = PerformanceAnalyticsEngine()
         self._pattern_engine = CandlePatternEngine(
             self.config.candle_pattern_config,
+        )
+        # Sprint 11P market-context intelligence. Constructed only
+        # when enabled; otherwise ``None`` and every evaluation point
+        # carries ``market_context=None`` (exact pre-11P behaviour).
+        self._market_context_engine: MarketContextEngine | None = (
+            MarketContextEngine(
+                config=self.config.market_context_config,
+                swing_config=self.config.swing_config,
+            )
+            if self.config.enable_market_context
+            else None
         )
 
     # ========================================================
@@ -330,6 +356,23 @@ class HistoricalEvaluationPipeline:
             )
             all_patterns.extend(patterns_at_t)
 
+            # ---------------------------------------------
+            # MARKET CONTEXT (Sprint 11P)
+            #
+            # Additive evidence only. Computed from the visible slice
+            # (candles[:t+1]) and attached to this point. It is NOT
+            # fed into the confluence/decision/signal engines below,
+            # so existing signal behaviour is unchanged. The context
+            # at t depends only on candles[:t+1] (the swing engine
+            # confirms a swing only after its right-side candles are
+            # present), so no future-confirmed structure can leak in.
+            # ---------------------------------------------
+            market_context_at_t = (
+                self._market_context_engine.analyze_at(visible, t)
+                if self._market_context_engine is not None
+                else None
+            )
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -345,6 +388,7 @@ class HistoricalEvaluationPipeline:
                         validation,
                         reason,
                         patterns=patterns_at_t,
+                        market_context=market_context_at_t,
                     )
                 )
                 continue
@@ -436,6 +480,7 @@ class HistoricalEvaluationPipeline:
                             reason,
                             suppressed=True,
                             patterns=patterns_at_t,
+                            market_context=market_context_at_t,
                         )
                     )
                     continue
@@ -501,6 +546,7 @@ class HistoricalEvaluationPipeline:
                     validation,
                     reason,
                     patterns=patterns_at_t,
+                    market_context=market_context_at_t,
                 )
             )
 
@@ -645,6 +691,7 @@ class HistoricalEvaluationPipeline:
         reason: str,
         suppressed: bool = False,
         patterns: tuple = (),
+        market_context=None,
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -658,6 +705,7 @@ class HistoricalEvaluationPipeline:
             reason=reason,
             suppressed=suppressed,
             patterns=patterns,
+            market_context=market_context,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:

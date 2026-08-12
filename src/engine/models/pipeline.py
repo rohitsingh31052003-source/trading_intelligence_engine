@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from engine.models.candle_pattern import CandlePattern
+from engine.models.market_context import MarketContext
 from engine.models.performance import PerformanceAnalytics
 from engine.models.signal import SignalResult
 from engine.models.validation import ValidationResult
@@ -71,6 +72,15 @@ class PipelineEvaluationPoint:
     patterns: tuple[CandlePattern, ...] = field(
         default_factory=tuple,
     )
+
+    # Market context (Sprint 11P): descriptive price-structure
+    # intelligence (trend / range / support-resistance context)
+    # computed from candles[:T+1]. Additive evidence only; it is NOT
+    # consumed by the existing confluence/decision/signal logic, so
+    # existing signal / trade behaviour is preserved. ``None`` when no
+    # market-context engine was configured or the point was produced
+    # before the integration.
+    market_context: MarketContext | None = None
 
     @property
     def produced_signal(self) -> bool:
