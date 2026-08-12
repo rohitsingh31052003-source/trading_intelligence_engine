@@ -7,8 +7,9 @@ reusable, immutable ``EvaluationReport`` suitable for comparing
 historical runs and eventually supporting strategy research. It
 also hosts the experiment comparison / report formatters
 (Sprint 11J), the experiment query / grouping / analysis
-formatters (Sprint 11L) and the experiment suite / suite
-comparison formatters (Sprint 11M).
+formatters (Sprint 11L), the experiment suite / suite comparison
+formatters (Sprint 11M) and the selection report formatter
+(Sprint 11N).
 
 Dependency direction:
 
@@ -29,6 +30,8 @@ Dependency direction:
     query / filtering / analysis
        ↑
     suite / batch orchestration
+       ↑
+    selection & promotion
 """
 
 from engine.models.evaluation import (
@@ -49,6 +52,9 @@ from engine.reporting.query import (
     ExperimentGroupingFormatter,
     ExperimentQueryFormatter,
 )
+from engine.reporting.selection import (
+    SelectionReportFormatter,
+)
 from engine.reporting.suite import (
     SuiteComparisonFormatter,
     SuiteReportFormatter,
@@ -63,6 +69,7 @@ __all__ = [
     "ExperimentQueryFormatter",
     "ExperimentReportFormatter",
     "PipelineStatistics",
+    "SelectionReportFormatter",
     "SignalStatistics",
     "SuiteComparisonFormatter",
     "SuiteReportFormatter",
