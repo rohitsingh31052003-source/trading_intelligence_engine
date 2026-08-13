@@ -31,6 +31,7 @@ from engine.models.market_context import MarketContext
 from engine.models.performance import PerformanceAnalytics
 from engine.models.setup_confluence import SetupAssessment
 from engine.models.signal import SignalResult
+from engine.models.trade_candidate import TradeCandidate
 from engine.models.validation import ValidationResult
 
 
@@ -92,6 +93,16 @@ class PipelineEvaluationPoint:
     # engine was configured or the point was produced before the
     # integration.
     setup_assessment: SetupAssessment | None = None
+
+    # Trade candidate (Sprint 11R): a structured, descriptive trade
+    # candidate derived from the candle-pattern evidence (Sprint 11O),
+    # market-context evidence (Sprint 11P) and setup/confluence
+    # assessment (Sprint 11Q). Additive evidence only; it is NOT
+    # consumed by the existing confluence/decision/signal logic, so
+    # existing signal / trade behaviour is preserved. ``None`` when no
+    # trade-candidate engine was configured or the point was produced
+    # before the integration. A trade candidate is NOT a trade signal.
+    trade_candidate: TradeCandidate | None = None
 
     @property
     def produced_signal(self) -> bool:

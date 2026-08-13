@@ -74,6 +74,7 @@ from engine.config.candle_pattern_config import (
 )
 from engine.config.market_context_config import MarketContextConfig
 from engine.config.setup_confluence_config import SetupConfluenceConfig
+from engine.config.trade_candidate_config import TradeCandidateConfig
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
@@ -85,6 +86,7 @@ from engine.intelligence.liquidity_event import (
 )
 from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.setup_confluence import SetupConfluenceEngine
+from engine.intelligence.trade_candidates import TradeCandidateEngine
 from engine.intelligence.performance import (
     PerformanceAnalyticsEngine,
 )
@@ -233,6 +235,24 @@ class PipelineConfig:
         default_factory=SetupConfluenceConfig,
     )
 
+    # Trade candidate configuration (Sprint 11R).
+    # ``enable_trade_candidates`` toggles the additive trade-candidate
+    # generation. When enabled, a descriptive ``TradeCandidate`` is
+    # derived from the candle-pattern evidence (Sprint 11O), the
+    # market-context evidence (Sprint 11P) and the setup/confluence
+    # assessment (Sprint 11Q), all computed from candles[:T+1]. The
+    # trade-candidate engine reads no candles directly (only the
+    # trigger close price as a scalar), so it cannot introduce
+    # look-ahead bias. It is NOT fed into the existing
+    # confluence/decision/signal logic, so existing signal / trade
+    # behaviour is preserved. Disabling it reproduces the pre-11R
+    # pipeline exactly (trade_candidate=None). A trade candidate is
+    # NOT a trade signal.
+    enable_trade_candidates: bool = True
+    trade_candidate_config: TradeCandidateConfig = field(
+        default_factory=TradeCandidateConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -303,6 +323,20 @@ class HistoricalEvaluationPipeline:
                 config=self.config.setup_confluence_config,
             )
             if self.config.enable_setup_confluence
+            else None
+        )
+        # Sprint 11R trade-candidate generation. Constructed only when
+        # enabled; otherwise ``None`` and every evaluation point
+        # carries ``trade_candidate=None`` (exact pre-11R behaviour).
+        # The engine consumes the already-computed setup assessment +
+        # market context + the trigger close (a scalar); it reads no
+        # candles directly, so it cannot introduce look-ahead bias and
+        # does not alter the existing confluence/decision/signal flow.
+        self._trade_candidate_engine: TradeCandidateEngine | None = (
+            TradeCandidateEngine(
+                config=self.config.trade_candidate_config,
+            )
+            if self.config.enable_trade_candidates
             else None
         )
 
@@ -426,6 +460,29 @@ class HistoricalEvaluationPipeline:
                 else None
             )
 
+            # ---------------------------------------------
+            # TRADE CANDIDATE (Sprint 11R)
+            #
+            # Additive evidence only. Derived from the already-computed
+            # setup assessment + market context (both from
+            # candles[:t+1]) plus the trigger close (a scalar from
+            # candle t). The candidate engine reads no candles
+            # directly, so it cannot introduce look-ahead bias. It is
+            # NOT fed into the confluence/decision/signal engines
+            # below, so existing signal / trade behaviour is unchanged.
+            # ---------------------------------------------
+            trade_candidate_at_t = (
+                self._trade_candidate_engine.generate(
+                    assessment=setup_assessment_at_t,
+                    market_context=market_context_at_t,
+                    index=t,
+                    timestamp=trigger_candle.timestamp,
+                    close_price=trigger_candle.close,
+                )
+                if self._trade_candidate_engine is not None
+                else None
+            )
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -443,6 +500,7 @@ class HistoricalEvaluationPipeline:
                         patterns=patterns_at_t,
                         market_context=market_context_at_t,
                         setup_assessment=setup_assessment_at_t,
+                        trade_candidate=trade_candidate_at_t,
                     )
                 )
                 continue
@@ -536,6 +594,7 @@ class HistoricalEvaluationPipeline:
                             patterns=patterns_at_t,
                             market_context=market_context_at_t,
                             setup_assessment=setup_assessment_at_t,
+                            trade_candidate=trade_candidate_at_t,
                         )
                     )
                     continue
@@ -603,6 +662,7 @@ class HistoricalEvaluationPipeline:
                     patterns=patterns_at_t,
                     market_context=market_context_at_t,
                     setup_assessment=setup_assessment_at_t,
+                    trade_candidate=trade_candidate_at_t,
                 )
             )
 
@@ -749,6 +809,7 @@ class HistoricalEvaluationPipeline:
         patterns: tuple = (),
         market_context=None,
         setup_assessment=None,
+        trade_candidate=None,
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -764,6 +825,7 @@ class HistoricalEvaluationPipeline:
             patterns=patterns,
             market_context=market_context,
             setup_assessment=setup_assessment,
+            trade_candidate=trade_candidate,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:
