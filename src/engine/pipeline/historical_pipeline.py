@@ -73,6 +73,7 @@ from engine.config.candle_pattern_config import (
     CandlePatternConfig,
 )
 from engine.config.market_context_config import MarketContextConfig
+from engine.config.setup_confluence_config import SetupConfluenceConfig
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
@@ -83,6 +84,7 @@ from engine.intelligence.liquidity_event import (
     LiquidityEventEngine,
 )
 from engine.intelligence.market_context_engine import MarketContextEngine
+from engine.intelligence.setup_confluence import SetupConfluenceEngine
 from engine.intelligence.performance import (
     PerformanceAnalyticsEngine,
 )
@@ -217,6 +219,20 @@ class PipelineConfig:
         default_factory=MarketContextConfig,
     )
 
+    # Setup / confluence configuration (Sprint 11Q).
+    # ``enable_setup_confluence`` toggles the additive setup assessment.
+    # When enabled, a descriptive ``SetupAssessment`` is computed by
+    # combining the candle-pattern evidence (Sprint 11O) and the
+    # market-context evidence (Sprint 11P) computed from
+    # candles[:T+1]. It is NOT fed into the existing
+    # confluence/decision/signal logic, so existing signal / trade
+    # behaviour is preserved. Disabling it reproduces the pre-11Q
+    # pipeline exactly (setup_assessment=None).
+    enable_setup_confluence: bool = True
+    setup_confluence_config: SetupConfluenceConfig = field(
+        default_factory=SetupConfluenceConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -273,6 +289,20 @@ class HistoricalEvaluationPipeline:
                 swing_config=self.config.swing_config,
             )
             if self.config.enable_market_context
+            else None
+        )
+        # Sprint 11Q setup/confluence intelligence. Constructed only
+        # when enabled; otherwise ``None`` and every evaluation point
+        # carries ``setup_assessment=None`` (exact pre-11Q behaviour).
+        # The engine consumes the already-computed pattern + market
+        # context evidence; it reads no candles directly, so it cannot
+        # introduce look-ahead bias and does not alter the existing
+        # confluence/decision/signal flow.
+        self._setup_confluence_engine: SetupConfluenceEngine | None = (
+            SetupConfluenceEngine(
+                config=self.config.setup_confluence_config,
+            )
+            if self.config.enable_setup_confluence
             else None
         )
 
@@ -373,6 +403,29 @@ class HistoricalEvaluationPipeline:
                 else None
             )
 
+            # ---------------------------------------------
+            # SETUP / CONFLUENCE ASSESSMENT (Sprint 11Q)
+            #
+            # Additive evidence only. Computed by combining the
+            # candle-pattern evidence (patterns_at_t) and the
+            # market-context evidence (market_context_at_t), both of
+            # which are already derived from candles[:t+1]. The setup
+            # engine reads no candles directly, so it cannot introduce
+            # look-ahead bias. It is NOT fed into the
+            # confluence/decision/signal engines below, so existing
+            # signal / trade behaviour is unchanged.
+            # ---------------------------------------------
+            setup_assessment_at_t = (
+                self._setup_confluence_engine.assess(
+                    patterns=patterns_at_t,
+                    market_context=market_context_at_t,
+                    index=t,
+                    timestamp=trigger_candle.timestamp,
+                )
+                if self._setup_confluence_engine is not None
+                else None
+            )
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -389,6 +442,7 @@ class HistoricalEvaluationPipeline:
                         reason,
                         patterns=patterns_at_t,
                         market_context=market_context_at_t,
+                        setup_assessment=setup_assessment_at_t,
                     )
                 )
                 continue
@@ -481,6 +535,7 @@ class HistoricalEvaluationPipeline:
                             suppressed=True,
                             patterns=patterns_at_t,
                             market_context=market_context_at_t,
+                            setup_assessment=setup_assessment_at_t,
                         )
                     )
                     continue
@@ -547,6 +602,7 @@ class HistoricalEvaluationPipeline:
                     reason,
                     patterns=patterns_at_t,
                     market_context=market_context_at_t,
+                    setup_assessment=setup_assessment_at_t,
                 )
             )
 
@@ -692,6 +748,7 @@ class HistoricalEvaluationPipeline:
         suppressed: bool = False,
         patterns: tuple = (),
         market_context=None,
+        setup_assessment=None,
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -706,6 +763,7 @@ class HistoricalEvaluationPipeline:
             suppressed=suppressed,
             patterns=patterns,
             market_context=market_context,
+            setup_assessment=setup_assessment,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:

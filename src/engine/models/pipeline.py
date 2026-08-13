@@ -29,6 +29,7 @@ from typing import Any
 from engine.models.candle_pattern import CandlePattern
 from engine.models.market_context import MarketContext
 from engine.models.performance import PerformanceAnalytics
+from engine.models.setup_confluence import SetupAssessment
 from engine.models.signal import SignalResult
 from engine.models.validation import ValidationResult
 
@@ -81,6 +82,16 @@ class PipelineEvaluationPoint:
     # market-context engine was configured or the point was produced
     # before the integration.
     market_context: MarketContext | None = None
+
+    # Setup / confluence assessment (Sprint 11Q): descriptive
+    # combination of the candle-pattern evidence (Sprint 11O) and
+    # market-context evidence (Sprint 11P) into a single structured
+    # setup view. Additive evidence only; it is NOT consumed by the
+    # existing confluence/decision/signal logic, so existing signal /
+    # trade behaviour is preserved. ``None`` when no setup-confluence
+    # engine was configured or the point was produced before the
+    # integration.
+    setup_assessment: SetupAssessment | None = None
 
     @property
     def produced_signal(self) -> bool:
