@@ -75,6 +75,7 @@ from engine.config.candle_pattern_config import (
 from engine.config.market_context_config import MarketContextConfig
 from engine.config.setup_confluence_config import SetupConfluenceConfig
 from engine.config.trade_candidate_config import TradeCandidateConfig
+from engine.config.trade_decision_config import TradeDecisionConfig
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
@@ -87,6 +88,7 @@ from engine.intelligence.liquidity_event import (
 from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.setup_confluence import SetupConfluenceEngine
 from engine.intelligence.trade_candidates import TradeCandidateEngine
+from engine.intelligence.trade_decision import TradeDecisionEngine
 from engine.intelligence.performance import (
     PerformanceAnalyticsEngine,
 )
@@ -253,6 +255,23 @@ class PipelineConfig:
         default_factory=TradeCandidateConfig,
     )
 
+    # Trade decision configuration (Sprint 11S).
+    # ``enable_trade_decision`` toggles the additive trade-decision /
+    # ranking layer. When enabled, a descriptive ``TradeDecision`` is
+    # produced from the Sprint 11R trade candidate (which is itself
+    # derived from candles[:T+1]). The decision engine reads only the
+    # already-computed candidate; it reads no candles directly, so it
+    # cannot introduce look-ahead bias. It is NOT fed into the existing
+    # confluence/decision/signal logic, so existing signal / trade
+    # behaviour is preserved. Disabling it reproduces the pre-11S
+    # pipeline exactly (trade_decision=None). A trade decision is NOT
+    # a trade signal, NOT a probability, and NOT a guarantee of
+    # profitability.
+    enable_trade_decision: bool = True
+    trade_decision_config: TradeDecisionConfig = field(
+        default_factory=TradeDecisionConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -337,6 +356,20 @@ class HistoricalEvaluationPipeline:
                 config=self.config.trade_candidate_config,
             )
             if self.config.enable_trade_candidates
+            else None
+        )
+        # Sprint 11S trade-decision / ranking layer. Constructed only
+        # when enabled; otherwise ``None`` and every evaluation point
+        # carries ``trade_decision=None`` (exact pre-11S behaviour).
+        # The engine consumes the already-computed trade candidate
+        # (derived from candles[:t+1]); it reads no candles directly,
+        # so it cannot introduce look-ahead bias and does not alter the
+        # existing confluence/decision/signal flow.
+        self._trade_decision_engine: TradeDecisionEngine | None = (
+            TradeDecisionEngine(
+                config=self.config.trade_decision_config,
+            )
+            if self.config.enable_trade_decision
             else None
         )
 
@@ -483,6 +516,32 @@ class HistoricalEvaluationPipeline:
                 else None
             )
 
+            # ---------------------------------------------
+            # TRADE DECISION (Sprint 11S)
+            #
+            # Additive evidence only. Derived from the already-computed
+            # trade candidate (itself from candles[:t+1]). The decision
+            # engine reads no candles directly, so it cannot introduce
+            # look-ahead bias. It is NOT fed into the
+            # confluence/decision/signal engines below, so existing
+            # signal / trade behaviour is unchanged. Only produced when
+            # a trade candidate exists (a None candidate carries no
+            # decision). A trade decision is NOT a trade signal, NOT a
+            # probability, and NOT a guarantee of profitability.
+            # ---------------------------------------------
+            trade_decision_at_t = (
+                self._trade_decision_engine.decide(
+                    candidate=trade_candidate_at_t,
+                    index=t,
+                    timestamp=trigger_candle.timestamp,
+                )
+                if (
+                    self._trade_decision_engine is not None
+                    and trade_candidate_at_t is not None
+                )
+                else None
+            )
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -501,6 +560,7 @@ class HistoricalEvaluationPipeline:
                         market_context=market_context_at_t,
                         setup_assessment=setup_assessment_at_t,
                         trade_candidate=trade_candidate_at_t,
+                        trade_decision=trade_decision_at_t,
                     )
                 )
                 continue
@@ -595,6 +655,7 @@ class HistoricalEvaluationPipeline:
                             market_context=market_context_at_t,
                             setup_assessment=setup_assessment_at_t,
                             trade_candidate=trade_candidate_at_t,
+                            trade_decision=trade_decision_at_t,
                         )
                     )
                     continue
@@ -663,6 +724,7 @@ class HistoricalEvaluationPipeline:
                     market_context=market_context_at_t,
                     setup_assessment=setup_assessment_at_t,
                     trade_candidate=trade_candidate_at_t,
+                    trade_decision=trade_decision_at_t,
                 )
             )
 
@@ -810,6 +872,7 @@ class HistoricalEvaluationPipeline:
         market_context=None,
         setup_assessment=None,
         trade_candidate=None,
+        trade_decision=None,
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -826,6 +889,7 @@ class HistoricalEvaluationPipeline:
             market_context=market_context,
             setup_assessment=setup_assessment,
             trade_candidate=trade_candidate,
+            trade_decision=trade_decision,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:

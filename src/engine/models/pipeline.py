@@ -32,6 +32,7 @@ from engine.models.performance import PerformanceAnalytics
 from engine.models.setup_confluence import SetupAssessment
 from engine.models.signal import SignalResult
 from engine.models.trade_candidate import TradeCandidate
+from engine.models.trade_decision import TradeDecision
 from engine.models.validation import ValidationResult
 
 
@@ -103,6 +104,19 @@ class PipelineEvaluationPoint:
     # trade-candidate engine was configured or the point was produced
     # before the integration. A trade candidate is NOT a trade signal.
     trade_candidate: TradeCandidate | None = None
+
+    # Trade decision (Sprint 11S): a deterministic, descriptive
+    # decision over the Sprint 11R trade candidate, expressing the
+    # strength/completeness of the available technical evidence as a
+    # ``Decision Score`` and a decision classification
+    # (REJECTED / WATCH / QUALIFIED / PREFERRED). Additive evidence
+    # only; it is NOT consumed by the existing confluence/decision/
+    # signal logic, so existing signal / trade behaviour is preserved.
+    # ``None`` when no trade-decision engine was configured or the
+    # point was produced before the integration. A trade decision is
+    # NOT a trade signal, NOT a probability, and NOT a guarantee of
+    # profitability.
+    trade_decision: TradeDecision | None = None
 
     @property
     def produced_signal(self) -> bool:
