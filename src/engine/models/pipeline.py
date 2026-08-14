@@ -231,6 +231,16 @@ class PipelineResult:
 
     performance: PerformanceAnalytics | None = None
 
+    # Market scan (Sprint 11U): an optional descriptive multi-timeframe
+    # market scan result covering multiple instruments / timeframes. The
+    # pipeline itself does NOT run scanner logic (the scanner is a
+    # separate multi-instrument / multi-timeframe concern); this field
+    # lets a caller bundle a scan run alongside the single-series
+    # pipeline result. ``None`` when no scan was attached (the default
+    # and the exact pre-11U behaviour). A market scan is NOT a trade
+    # signal, NOT a probability, and NOT a guarantee of profitability.
+    market_scan: object | None = None
+
     # -----------------------------------------------------
     # HELPERS
     # -----------------------------------------------------
