@@ -28,6 +28,7 @@ from typing import Any
 
 from engine.models.candle_pattern import CandlePattern
 from engine.models.market_context import MarketContext
+from engine.models.opportunity import TradeOpportunity
 from engine.models.performance import PerformanceAnalytics
 from engine.models.setup_confluence import SetupAssessment
 from engine.models.signal import SignalResult
@@ -117,6 +118,20 @@ class PipelineEvaluationPoint:
     # NOT a trade signal, NOT a probability, and NOT a guarantee of
     # profitability.
     trade_decision: TradeDecision | None = None
+
+    # Trade opportunity (Sprint 11T): a deterministic, descriptive
+    # trade opportunity view over the Sprint 11S trade decision,
+    # expressing whether the candidate should be surfaced as the best
+    # available trade opportunity at this evaluation point, and its
+    # rank/status (BEST_OPPORTUNITY / ALTERNATIVE_OPPORTUNITY / WATCH /
+    # NO_OPPORTUNITY). Additive evidence only; it is NOT consumed by
+    # the existing confluence/decision/signal logic, so existing signal
+    # / trade behaviour is preserved. ``None`` when no
+    # trade-opportunity engine was configured, when no trade decision
+    # exists at this point, or the point was produced before the
+    # integration. A trade opportunity is NOT a trade signal, NOT a
+    # probability, and NOT a guarantee of profitability.
+    trade_opportunity: TradeOpportunity | None = None
 
     @property
     def produced_signal(self) -> bool:

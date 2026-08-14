@@ -76,6 +76,7 @@ from engine.config.market_context_config import MarketContextConfig
 from engine.config.setup_confluence_config import SetupConfluenceConfig
 from engine.config.trade_candidate_config import TradeCandidateConfig
 from engine.config.trade_decision_config import TradeDecisionConfig
+from engine.config.trade_opportunity_config import TradeOpportunityConfig
 from engine.intelligence.bos import BOSEngine
 from engine.intelligence.choch import CHOCHEngine
 from engine.intelligence.confluence import ConfluenceEngine
@@ -89,6 +90,7 @@ from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.setup_confluence import SetupConfluenceEngine
 from engine.intelligence.trade_candidates import TradeCandidateEngine
 from engine.intelligence.trade_decision import TradeDecisionEngine
+from engine.intelligence.trade_opportunity import TradeOpportunityEngine
 from engine.intelligence.performance import (
     PerformanceAnalyticsEngine,
 )
@@ -272,6 +274,23 @@ class PipelineConfig:
         default_factory=TradeDecisionConfig,
     )
 
+    # Trade opportunity configuration (Sprint 11T).
+    # ``enable_trade_opportunity`` toggles the additive trade-opportunity
+    # filter / ranking layer. When enabled, a descriptive
+    # ``TradeOpportunity`` is produced from the Sprint 11S trade
+    # decision (which is itself derived from candles[:T+1]). The
+    # opportunity engine reads only the already-computed trade decision;
+    # it reads no candles directly, so it cannot introduce look-ahead
+    # bias. It is NOT fed into the existing confluence/decision/signal
+    # logic, so existing signal / trade behaviour is preserved.
+    # Disabling it reproduces the pre-11T pipeline exactly
+    # (trade_opportunity=None). A trade opportunity is NOT a trade
+    # signal, NOT a probability, and NOT a guarantee of profitability.
+    enable_trade_opportunity: bool = True
+    trade_opportunity_config: TradeOpportunityConfig = field(
+        default_factory=TradeOpportunityConfig,
+    )
+
 
 # ============================================================
 # PIPELINE
@@ -370,6 +389,20 @@ class HistoricalEvaluationPipeline:
                 config=self.config.trade_decision_config,
             )
             if self.config.enable_trade_decision
+            else None
+        )
+        # Sprint 11T trade-opportunity filter / ranking layer.
+        # Constructed only when enabled; otherwise ``None`` and every
+        # evaluation point carries ``trade_opportunity=None`` (exact
+        # pre-11T behaviour). The engine consumes the already-computed
+        # trade decision (derived from candles[:t+1]); it reads no
+        # candles directly, so it cannot introduce look-ahead bias and
+        # does not alter the existing confluence/decision/signal flow.
+        self._trade_opportunity_engine: TradeOpportunityEngine | None = (
+            TradeOpportunityEngine(
+                config=self.config.trade_opportunity_config,
+            )
+            if self.config.enable_trade_opportunity
             else None
         )
 
@@ -542,6 +575,32 @@ class HistoricalEvaluationPipeline:
                 else None
             )
 
+            # ---------------------------------------------
+            # TRADE OPPORTUNITY (Sprint 11T)
+            #
+            # Additive evidence only. Derived from the already-computed
+            # trade decision (itself from candles[:t+1]). The
+            # opportunity engine reads no candles directly, so it cannot
+            # introduce look-ahead bias. It is NOT fed into the
+            # confluence/decision/signal engines below, so existing
+            # signal / trade behaviour is unchanged. Only produced when
+            # a trade decision exists (a None decision carries no
+            # opportunity). A trade opportunity is NOT a trade signal,
+            # NOT a probability, and NOT a guarantee of profitability.
+            # ---------------------------------------------
+            trade_opportunity_at_t = (
+                self._trade_opportunity_engine.evaluate(
+                    decision=trade_decision_at_t,
+                    index=t,
+                    timestamp=trigger_candle.timestamp,
+                )
+                if (
+                    self._trade_opportunity_engine is not None
+                    and trade_decision_at_t is not None
+                )
+                else None
+            )
+
             swings = self._swing_engine.detect(visible)
 
             if not swings:
@@ -561,6 +620,7 @@ class HistoricalEvaluationPipeline:
                         setup_assessment=setup_assessment_at_t,
                         trade_candidate=trade_candidate_at_t,
                         trade_decision=trade_decision_at_t,
+                        trade_opportunity=trade_opportunity_at_t,
                     )
                 )
                 continue
@@ -656,6 +716,7 @@ class HistoricalEvaluationPipeline:
                             setup_assessment=setup_assessment_at_t,
                             trade_candidate=trade_candidate_at_t,
                             trade_decision=trade_decision_at_t,
+                            trade_opportunity=trade_opportunity_at_t,
                         )
                     )
                     continue
@@ -725,6 +786,7 @@ class HistoricalEvaluationPipeline:
                     setup_assessment=setup_assessment_at_t,
                     trade_candidate=trade_candidate_at_t,
                     trade_decision=trade_decision_at_t,
+                    trade_opportunity=trade_opportunity_at_t,
                 )
             )
 
@@ -873,6 +935,7 @@ class HistoricalEvaluationPipeline:
         setup_assessment=None,
         trade_candidate=None,
         trade_decision=None,
+        trade_opportunity=None,
     ) -> PipelineEvaluationPoint:
 
         return PipelineEvaluationPoint(
@@ -890,6 +953,7 @@ class HistoricalEvaluationPipeline:
             setup_assessment=setup_assessment,
             trade_candidate=trade_candidate,
             trade_decision=trade_decision,
+            trade_opportunity=trade_opportunity,
         )
 
     def _no_signal_reason(self, signal, decision) -> str:
