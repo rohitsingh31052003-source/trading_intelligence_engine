@@ -487,6 +487,21 @@ def build_outcome_subject(
     decision_classification = scan_result.decision_classification or ""
     decision_score = int(scan_result.decision_score or 0)
 
+    # Additive projections of existing fields (Sprint 11X analytics needs
+    # these as breakdown dimensions; they survive scan serialization
+    # because they are captured here, before the heavy reference objects
+    # are dropped). They never influence outcome evaluation semantics.
+    setup_type = ""
+    setup_type_attr = getattr(candidate, "setup_type", None)
+    setup_type_name = getattr(setup_type_attr, "name", None)
+    if setup_type_name:
+        setup_type = str(setup_type_name)
+    mtf_alignment = ""
+    alignment_attr = getattr(scan_result, "alignment", None)
+    alignment_name = getattr(alignment_attr, "name", None)
+    if alignment_name:
+        mtf_alignment = str(alignment_name)
+
     return OutcomeSubject(
         instrument=scan_result.instrument,
         direction=direction,
@@ -500,6 +515,8 @@ def build_outcome_subject(
         rank=rank,
         scan_id=scan_id,
         setup_timeframe=setup_timeframe,
+        setup_type=setup_type,
+        mtf_alignment=mtf_alignment,
     )
 
 

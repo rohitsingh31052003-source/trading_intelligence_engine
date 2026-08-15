@@ -197,6 +197,21 @@ class OutcomeSubject:
 
     setup_timeframe
         The setup-timeframe label the future candles must come from.
+
+    setup_type
+        Sprint 11R setup-type name (reused verbatim from the candidate),
+        or ``""`` when no candidate / setup type exists. Captured so a
+        downstream analytics layer can group outcomes by setup type
+        WITHOUT re-reading the heavy candidate reference (which is
+        dropped on scan serialization). Additive, defaulted — never
+        influences outcome evaluation semantics.
+
+    mtf_alignment
+        Sprint 11U multi-timeframe alignment name (reused verbatim from
+        the instrument scan result), or ``""`` when unavailable.
+        Captured so a downstream analytics layer can group outcomes by
+        MTF alignment. Additive, defaulted — never influences outcome
+        evaluation semantics.
     """
 
     instrument: str
@@ -211,6 +226,8 @@ class OutcomeSubject:
     rank: int = 0
     scan_id: str = ""
     setup_timeframe: str = ""
+    setup_type: str = ""
+    mtf_alignment: str = ""
 
     @property
     def has_geometry(self) -> bool:
