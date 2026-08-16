@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card selector">
+  <form method="get" action="/" class="selector-form">
+    <label>
+      Instrument
+      <select name="instrument">
+        {% for inst in instruments %}
+        <option value="{{ inst }}" {% if inst == selected_instrument %}selected{% endif %}>{{ inst }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Timeframe
+      <select name="timeframe">
+        {% for tf in timeframes %}
+        <option value="{{ tf }}" {% if tf == selected_timeframe %}selected{% endif %}>{{ tf }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Analyze</button>
+  </form>
+  <p class="hint">
+    Local deterministic fixtures provide <strong>15m</strong> setup + <strong>1D</strong> context for
+    NIFTY, RELIANCE, TCS, HDFCBANK, ICICIBANK. Other timeframes show an honest
+    &ldquo;unavailable&rdquo; state.
+  </p>
+</section>
+
+{% if view %}
+
+{# ---------------- MARKET OVERVIEW ---------------- #}
+<section class="card">
+  <h2>Market Overview <span class="badge badge-{{ view.complete | lower }}">{{ 'COMPLETE' if view.complete else 'INCOMPLETE' }}</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Last Price</span><span class="value">{{ view.market_overview.last_price | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Latest Candle</span><span class="value sm">{{ view.market_overview.latest_candle_timestamp | fmt_ts }}</span></div>
+    <div class="metric"><span class="label">HTF Trend</span><span class="value">{{ view.market_overview.htf_trend }}</span></div>
+    <div class="metric"><span class="label">LTF Trend</span><span class="value">{{ view.market_overview.ltf_trend }}</span></div>
+    <div class="metric"><span class="label">Range State</span><span class="value">{{ view.market_overview.range_state }}</span></div>
+    <div class="metric"><span class="label">MTF Alignment</span><span class="value {{ view.market_overview.mtf_alignment | lower }}">{{ view.market_overview.mtf_alignment }}</span></div>
+    <div class="metric"><span class="label">Price Location</span><span class="value">{{ view.market_overview.price_location }}</span></div>
+    <div class="metric"><span class="label">Confirmed Swings</span><span class="value">{{ view.market_overview.confirmed_swings }}</span></div>
+    <div class="metric"><span class="label">Support</span><span class="value">{{ view.market_overview.support | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Resistance</span><span class="value">{{ view.market_overview.resistance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Recent Structure</span><span class="value sm">{{ view.market_overview.recent_structure or 'insufficient' }}</span></div>
+    <div class="metric"><span class="label">Data Stale</span><span class="value {{ 'warn' if view.market_overview.data_stale else 'ok' }}">{{ 'YES' if view.market_overview.data_stale else 'NO' }}</span></div>
+  </div>
+  {% if view.market_overview.data_stale %}
+  <p class="warn">Latest candle appears stale relative to the configured staleness threshold.</p>
+  {% endif %}
+</section>
+
+{# ---------------- TRADE PANEL ---------------- #}
+<section class="card trade-panel {{ 'panel-actionable' if view.has_actionable_geometry else 'panel-watch' }}">
+  <h2>Current Setup &mdash; {{ view.actionability.value }}</h2>
+
+  {% if view.geometry.geometry_available %}
+  <div class="grid grid-3">
+    <div class="metric"><span class="label">Direction</span><span class="value {{ view.geometry.direction | lower }}">{{ view.geometry.direction }}</span></div>
+    <div class="metric"><span class="label">Setup Type</span><span class="value">{{ view.setup_type }}</span></div>
+    <div class="metric"><span class="label">Decision</span><span class="value">{{ view.decision.decision_classification }}</span></div>
+    <div class="metric"><span class="label">Opportunity</span><span class="value">{{ view.decision.opportunity_status }}</span></div>
+    <div class="metric"><span class="label">MTF Alignment</span><span class="value {{ view.market_overview.mtf_alignment | lower }}">{{ view.market_overview.mtf_alignment }}</span></div>
+    <div class="metric"><span class="label">Evidence</span><span class="value">{{ view.evidence.evidence_strength }}</span></div>
+
+    <div class="metric"><span class="label">Entry</span><span class="value">{{ view.geometry.entry | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Stop Loss</span><span class="value">{{ view.geometry.stop | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Target 1</span><span class="value">{{ view.geometry.target_1 | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Target 2</span><span class="value muted">Not supported by current architecture</span></div>
+    <div class="metric"><span class="label">Risk</span><span class="value">{{ view.geometry.risk_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Reward</span><span class="value">{{ view.geometry.reward_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Risk / Reward</span><span class="value">{{ view.geometry.risk_reward_ratio | fmt_ratio }}</span></div>
+    <div class="metric"><span class="label">Invalidation</span><span class="value">{{ view.geometry.invalidation_level | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Confluence</span><span class="value">{{ view.decision.confluence_score }}/5</span></div>
+    <div class="metric"><span class="label">Decision Score</span><span class="value">{{ view.decision.decision_score }}/100</span></div>
+  </div>
+  {% else %}
+  <div class="no-trade">
+    <h3>TRADE GEOMETRY UNAVAILABLE</h3>
+    <p>
+      The existing engine did not produce complete trade geometry
+      (entry / stop / target) at this point. This is reported honestly &mdash;
+      no entry, stop or target is fabricated to make the panel look complete.
+    </p>
+    {% if view.geometry.entry %}<p class="sm">Partial: direction={{ view.geometry.direction }}, entry={{ view.geometry.entry | fmt_price }}, stop={{ view.geometry.stop | fmt_price }}, target={{ view.geometry.target_1 | fmt_price }}</p>{% endif %}
+  </div>
+  <div class="grid grid-3">
+    <div class="metric"><span class="label">Direction</span><span class="value {{ view.geometry.direction | lower }}">{{ view.geometry.direction or 'NONE' }}</span></div>
+    <div class="metric"><span class="label">Setup Type</span><span class="value">{{ view.setup_type or 'none' }}</span></div>
+    <div class="metric"><span class="label">Decision</span><span class="value">{{ view.decision.decision_classification or 'none' }}</span></div>
+  </div>
+  {% endif %}
+
+  <p class="sm rationale"><strong>Reason:</strong> {{ view.reason }}</p>
+</section>
+
+{# ---------------- ACTIONABILITY ---------------- #}
+<section class="card">
+  <h2>Actionability</h2>
+  <div class="actionability actionability-{{ view.actionability.value | lower }}">
+    {{ view.actionability.value }}
+  </div>
+  <p class="sm">
+    Actionability is a <em>deterministic presentation mirror</em> of the existing
+    decision classification + opportunity status. It is <strong>not</strong> a new
+    predictive score, not a probability, and not a BUY/SELL recommendation.
+    Mapping: INCOMPLETE/no-decision &rarr; UNAVAILABLE; NO_OPPORTUNITY/REJECTED &rarr;
+    NO_OPPORTUNITY; PREFERRED+eligible &rarr; PREFERRED_SETUP; QUALIFIED+eligible &rarr;
+    QUALIFIED_SETUP; otherwise WATCH.
+  </p>
+</section>
+
+{# ---------------- CURRENT DECISION ---------------- #}
+<section class="card">
+  <h2>Current Decision <span class="muted">(authoritative)</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Classification</span><span class="value">{{ view.decision.decision_classification or 'none' }}</span></div>
+    <div class="metric"><span class="label">Score</span><span class="value">{{ view.decision.decision_score }}/100</span></div>
+    <div class="metric"><span class="label">Opportunity</span><span class="value">{{ view.decision.opportunity_status or 'none' }}</span></div>
+    <div class="metric"><span class="label">Rank</span><span class="value">{{ view.decision.rank }}</span></div>
+    <div class="metric"><span class="label">Eligible</span><span class="value">{{ view.decision.eligible }}</span></div>
+    <div class="metric"><span class="label">Confluence</span><span class="value">{{ view.decision.confluence_score }}/5</span></div>
+  </div>
+  <p class="sm rationale"><strong>Rationale:</strong> {{ view.decision.rationale }}</p>
+  <p class="sm muted">
+    Decision classification is generated by the existing decision architecture and
+    remains authoritative. It is not renamed into BUY/SELL.
+  </p>
+</section>
+
+{# ---------------- EVIDENCE ---------------- #}
+<section class="card">
+  <h2>Historical Evidence</h2>
+  {% if view.evidence.available %}
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Evidence Strength</span><span class="value {{ view.evidence.evidence_strength | lower }}">{{ view.evidence.evidence_strength }}</span></div>
+    <div class="metric"><span class="label">Strategy Interpretation</span><span class="value">{{ view.evidence.strategy_interpretation }}</span></div>
+    <div class="metric"><span class="label">Cohort</span><span class="value sm">{{ view.evidence.cohort_key }}</span></div>
+    <div class="metric"><span class="label">Sample Size</span><span class="value">{{ view.evidence.sample_size }}</span></div>
+    <div class="metric"><span class="label">Win Rate</span><span class="value">{{ view.evidence.win_rate | fmt_pct }}</span></div>
+    <div class="metric"><span class="label">Avg Realized R</span><span class="value">{{ view.evidence.avg_realized_r | fmt_r }}</span></div>
+    <div class="metric"><span class="label">Profit Factor</span><span class="value">{{ view.evidence.profit_factor | fmt_r }}</span></div>
+  </div>
+  {% if view.evidence.evidence_strength == 'INSUFFICIENT' %}
+  <p class="warn">
+    Evidence is INSUFFICIENT (sample below the configured minimum). Observed metrics
+    are NOT reliable evidence and must not be treated as such.
+  </p>
+  {% endif %}
+  {% else %}
+  <div class="no-trade">
+    <h3>EVIDENCE UNAVAILABLE</h3>
+    <p>No offline historical evidence corpus is attached. No strength, win rate or
+    sample size is fabricated. Attach an offline Sprint 11Y evidence report to enable
+    this section.</p>
+  </div>
+  {% endif %}
+  <p class="sm rationale"><strong>Limitations:</strong> {{ view.evidence.limitations }}</p>
+  <p class="sm muted">A 1-trade 100% winner is never presented as strong evidence (sample-size hard gate).</p>
+</section>
+
+{# ---------------- CHART ---------------- #}
+<section class="card">
+  <h2>Chart &mdash; {{ selected_instrument }} {{ selected_timeframe }}</h2>
+  <div id="chart-container" data-payload='{{ chart_json | tojson }}'></div>
+  <p class="sm muted">
+    Levels overlaid (entry / stop / target / support / resistance / invalidation) come
+    only from backend engine output. The frontend never invents technical levels.
+  </p>
+</section>
+
+{# ---------------- EXPLANATION ---------------- #}
+<section class="card">
+  <h2>Why this setup?</h2>
+  <ul class="explanation">
+    <li><strong>Market structure:</strong> {{ view.market_overview.recent_structure or 'insufficient' }} ({{ view.market_overview.ltf_trend }})</li>
+    <li><strong>HTF trend:</strong> {{ view.market_overview.htf_trend }}</li>
+    <li><strong>MTF alignment:</strong> {{ view.market_overview.mtf_alignment }}</li>
+    <li><strong>Setup type:</strong> {{ view.setup_type or 'none' }}</li>
+    <li><strong>Confluence:</strong> {{ view.decision.confluence_score }}/5 sources aligned</li>
+    <li><strong>Decision:</strong> {{ view.decision.decision_classification }} (score {{ view.decision.decision_score }})</li>
+    <li><strong>Evidence:</strong> {{ view.evidence.evidence_strength }}</li>
+    <li><strong>Invalidation:</strong> {{ view.geometry.invalidation_level | fmt_price }} (== stop loss)</li>
+  </ul>
+</section>
+
+{# ---------------- WARNINGS ---------------- #}
+{% if view.warnings %}
+<section class="card">
+  <h2>Warnings &amp; Limitations</h2>
+  <ul class="warnings">
+    {% for w in view.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% else %}
+<section class="card"><p>Select an instrument and timeframe, then click Analyze.</p></section>
+{% endif %}
+
+{% endblock %}

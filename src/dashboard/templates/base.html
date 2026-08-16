@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Trading Intelligence Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Trading Intelligence Dashboard</div>
+    <div class="tagline">Descriptive technical-analysis &amp; historical research context &mdash; not a trading recommendation</div>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <p>
+      This system provides technical-analysis and historical research context only.
+      It does <strong>not</strong> guarantee future performance. Historical results are
+      descriptive and not predictive. No trade is guaranteed to succeed. The existing
+      decision engine remains authoritative; this dashboard does not modify it.
+    </p>
+  </footer>
+  <script src="/static/chart.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
