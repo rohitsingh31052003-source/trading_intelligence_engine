@@ -56,6 +56,55 @@ intervals `1m`/`2m`/`5m`/`15m`/`30m`/`60m`/`1h`/`90m`/`1D` (no resampling /
 fabrication of other intervals). Freshness (`CURRENT` / `STALE` / `UNAVAILABLE`
 / `INVALID`) is data quality / product state only — it never alters the decision.
 
+## Multi-instrument scanner / watchlist (Product Phase 2)
+
+The dashboard also has a **multi-instrument scanner / watchlist** view at
+`/scan` (JSON at `/api/scan`) that scans every instrument in a watchlist
+independently using the EXISTING intelligence pipeline and presents the
+resulting opportunities in one coherent, deterministically ordered view.
+
+```bash
+python -m uvicorn dashboard.app:app --reload
+# open http://127.0.0.1:8000/scan
+# or GET /api/scan?timeframe=15m&instruments=NIFTY,RELIANCE,TCS
+```
+
+- **Watchlist** — a small, deterministic, validated collection of instrument
+  names (`dashboard.watchlist.Watchlist`): add / remove with duplicate
+  prevention, canonical (stripped + upper-cased) names, and lexicographic
+  ordering so input order never affects results. No persistence (local
+  workstation only). The default watchlist is the local fixture instruments.
+- **Reuse-only** — the scanner orchestrates the existing single-instrument
+  analysis (`DashboardAnalysisService.analyze`) per instrument. It implements NO
+  new market-analysis, decision, scoring, geometry or evidence logic; every
+  per-row value (decision, actionability, geometry, evidence, freshness) is read
+  from the reused trade view.
+- **Presentation ordering, not a score** — rows are ordered by a fixed
+  **presentational** key: decision classification (`PREFERRED` < `QUALIFIED` <
+  `WATCH` < `REJECTED`), then actionability/readiness, then evidence strength,
+  then geometry availability, then freshness, then instrument name. This is a
+  SORT, not a probability / predictive score / new ranking layer. Direction
+  (LONG/SHORT) is deliberately NOT a ranking key. The existing decision
+  classification is reused **verbatim** — never renamed to BUY/SELL, never
+  upgraded or downgraded.
+- **Failure isolation** — one instrument that fails (provider timeout /
+  unsupported instrument / unsupported timeframe / empty / malformed / invalid
+  data) is reported as an honest `INVALID` row and the scan CONTINUES with the
+  remaining instruments. One bad symbol never aborts the whole scan.
+- **Completed-candle guarantee** — each instrument is evaluated using the latest
+  COMPLETED setup candle; a forming candle is never fed to the engine and no
+  future candle is read (Product Phase 1 guarantees preserved). The scanner never
+  calls the Sprint 11W outcome evaluator and never runs the historical pipeline.
+- **Determinism** — input watchlist ordering never changes the output order;
+  two scans of identical data always produce identical results and row order.
+- **Kept concerns separate** — decision / geometry / evidence / actionability /
+  data source are never collapsed into one "signal". Target 2 remains
+  unsupported (`None` + `target_2_supported=False`). Evidence `UNAVAILABLE` (no
+  corpus) is NOT the same as `INSUFFICIENT` (and is never fabricated).
+
+The scanner is DESCRIPTIVE ONLY — it does not predict, does not guarantee
+profitability, and does not constitute a trading recommendation.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures

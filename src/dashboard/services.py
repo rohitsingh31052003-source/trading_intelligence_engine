@@ -75,9 +75,13 @@ from dashboard.views import (
     EvidenceView,
     GeometryView,
     MarketOverviewView,
+    WatchlistRowView,
+    WatchlistScanView,
     derive_actionability,
     derive_actionability_reason,
+    scanner_rank_key,
 )
+from dashboard.watchlist import Watchlist
 
 #: Honest staleness threshold for the "data stale" warning. The latest
 #: completed candle is considered stale when it is older than this many
@@ -108,6 +112,32 @@ class AnalysisRequest:
     """
 
     instrument: str
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+
+
+@dataclass(frozen=True)
+class ScanRequest:
+    """
+    A multi-instrument scanner request (Product Phase 2).
+
+    Attributes:
+
+    watchlist
+        Optional :class:`~dashboard.watchlist.Watchlist` to scan. When
+        ``None`` the provider's default watchlist is used.
+
+    setup_timeframe
+        Dashboard setup (execution) timeframe label applied to EVERY
+        instrument in the watchlist.
+
+    context_timeframe
+        Optional explicit context (higher) timeframe. When ``None`` a
+        sensible fallback is derived per the existing single-instrument
+        behavior.
+    """
+
+    watchlist: Watchlist | None = None
     setup_timeframe: str = "15m"
     context_timeframe: str | None = None
 
@@ -298,6 +328,187 @@ class DashboardAnalysisService:
             request, setup_tf, ctx_tf or "", instrument_result, series=series,
         )
         return view
+
+    # ------------------------------------------------------------
+    # MULTI-INSTRUMENT SCANNER (Product Phase 2)
+    # ------------------------------------------------------------
+
+    def scan_watchlist(self, request: ScanRequest) -> WatchlistScanView:
+        """
+        Scan every instrument in a watchlist independently and present
+        the resulting opportunities in one coherent, deterministically
+        ordered view.
+
+        This method ORCHESTRATES the existing single-instrument
+        :meth:`analyze` only. It implements NO new market-analysis,
+        decision, scoring, geometry or evidence logic — every per-row
+        value is read from the reused :class:`DashboardTradeView` that
+        :meth:`analyze` already produces.
+
+        GUARANTEES (Product Phase 2):
+
+        * **Reuse-only**: reuses :meth:`analyze` (which reuses the
+          existing scanner + intelligence pipeline) per instrument.
+        * **Failure isolation**: one instrument that fails (provider
+          timeout / unsupported instrument / unsupported timeframe /
+          empty data / malformed data / invalid analysis) is reported
+          as an honest ``ActionabilityState.INVALID`` row and the scan
+          CONTINUES with the remaining instruments. One bad symbol
+          never aborts the whole scan.
+        * **Completed-candle guarantee**: inherited from
+          :meth:`analyze` — each instrument is evaluated using the
+          latest COMPLETED setup candle; a forming candle is never fed
+          to the engine and no future candle is read.
+        * **Determinism**: the rows are ordered by the fixed
+          PRESENTATIONAL key (:func:`scanner_rank_key`) — decision
+          classification, actionability, evidence strength, geometry
+          availability, freshness, then instrument name. Input
+          watchlist ordering NEVER changes the final ordering; two
+          scans of identical data always produce identical results and
+          identical row order.
+        * **No look-ahead**: this method accepts NO ``future`` /
+          ``future_candles`` argument; it never calls the Sprint 11W
+          outcome evaluator and never runs the historical pipeline
+          (inherited from :meth:`analyze`).
+        * **Decision authority**: the existing decision classification
+          is reused VERBATIM — never renamed to BUY/SELL, never
+          upgraded / downgraded. The presentational ordering is a sort,
+          NOT a new score, NOT a probability, NOT a prediction.
+
+        The result is DESCRIPTIVE ONLY. It does NOT guarantee future
+        performance and does NOT constitute a trading recommendation.
+        """
+
+        watchlist = (
+            request.watchlist
+            if request.watchlist is not None
+            else self.default_watchlist()
+        )
+        instruments = watchlist.instruments
+        setup_tf = request.setup_timeframe
+
+        rows: list[WatchlistRowView] = []
+        analyzed = 0
+        errored = 0
+        actionable = 0
+        scan_warnings: list[str] = []
+
+        for instrument in instruments:
+            row = self._scan_one(
+                instrument, setup_tf, request.context_timeframe,
+            )
+            rows.append(row)
+            if row.error:
+                errored += 1
+            else:
+                analyzed += 1
+            if row.actionability is ActionabilityState.READY_FOR_REVIEW:
+                actionable += 1
+
+        if errored:
+            scan_warnings.append(
+                f"{errored} instrument(s) could not be analysed (provider "
+                "failure / unsupported instrument / timeframe / empty or "
+                "invalid data). They are reported honestly as INVALID rows "
+                "and were NOT fabricated into opportunities; the remaining "
+                "instruments were still scanned (failure isolation).",
+            )
+        # Determine the context timeframe label used (for display) from
+        # the first successfully-analyzed row, falling back to the
+        # derived context for the setup timeframe.
+        ctx_tf = request.context_timeframe or context_timeframe_for(setup_tf) or ""
+        for row in rows:
+            if not row.error and row.view.context_timeframe:
+                ctx_tf = row.view.context_timeframe
+                break
+
+        # Deterministic PRESENTATIONAL ordering (NOT a score). Stable
+        # sort by the ranking key; identical data -> identical order
+        # regardless of input watchlist order.
+        rows.sort(key=scanner_rank_key)
+        ranked = tuple(
+            WatchlistRowView(
+                instrument=row.instrument,
+                view=row.view,
+                error=row.error,
+                rank=i + 1,
+            )
+            for i, row in enumerate(rows)
+        )
+
+        rationale = (
+            "Rows are ordered by a fixed PRESENTATIONAL key (decision "
+            "classification, actionability, evidence strength, geometry "
+            "availability, freshness, then instrument name). This is "
+            "presentation ordering, NOT a predictive score, NOT a "
+            "probability, and NOT a BUY/SELL recommendation. The existing "
+            "decision classification is reused verbatim and never upgraded "
+            "or downgraded."
+        )
+
+        return WatchlistScanView(
+            watchlist_instruments=instruments,
+            setup_timeframe=setup_tf,
+            context_timeframe=ctx_tf,
+            rows=ranked,
+            total=len(rows),
+            analyzed=analyzed,
+            errored=errored,
+            actionable_count=actionable,
+            warnings=tuple(scan_warnings),
+            rationale=rationale,
+        )
+
+    def default_watchlist(self) -> Watchlist:
+        """The watchlist the scanner uses when none is supplied.
+
+        Defaults to the local fixture instrument set so the scanner has
+        something useful to scan out of the box on the fixture provider.
+        """
+
+        return Watchlist.default()
+
+    def _scan_one(
+        self,
+        instrument: str,
+        setup_tf: str,
+        context_timeframe: str | None,
+    ) -> WatchlistRowView:
+        """Analyze one instrument for the scanner (failure-isolated).
+
+        Any exception from the analysis is caught and converted into an
+        honest ``INVALID`` row — never raised, never fabricated. This is
+        the failure-isolation boundary: one bad symbol never aborts the
+        whole scan.
+        """
+
+        try:
+            view = self.analyze(
+                AnalysisRequest(
+                    instrument=instrument,
+                    setup_timeframe=setup_tf,
+                    context_timeframe=context_timeframe,
+                ),
+            )
+            error = view.actionability is ActionabilityState.INVALID and not view.complete
+            return WatchlistRowView(
+                instrument=instrument, view=view, error=error,
+            )
+        except Exception as exc:  # noqa: BLE001 - failure isolation
+            # Build an honest unavailable view for this instrument. This
+            # mirrors _unavailable_view but does not require a series.
+            unavailable = self._unavailable_view(
+                AnalysisRequest(
+                    instrument=instrument,
+                    setup_timeframe=setup_tf,
+                    context_timeframe=context_timeframe,
+                ),
+                context_timeframe or "",
+                f"scanner error for {instrument}: {exc}",
+            )
+            return WatchlistRowView(
+                instrument=instrument, view=unavailable, error=True,
+            )
 
     # ------------------------------------------------------------
     # VIEW BUILDING (pure projection — no intelligence recomputed)
@@ -849,5 +1060,6 @@ __all__ = [
     "DashboardAnalysisService",
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
+    "ScanRequest",
     "default_service",
 ]

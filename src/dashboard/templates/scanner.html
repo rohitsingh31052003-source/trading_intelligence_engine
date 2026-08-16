@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Scanner / Watchlist &mdash; Trading Intelligence Dashboard{% endblock %}
+{% block content %}
+
+<section class="card selector">
+  <form method="get" action="/scan" class="selector-form">
+    <label>
+      Timeframe
+      <select name="timeframe">
+        {% for tf in timeframes %}
+        <option value="{{ tf }}" {% if tf == selected_timeframe %}selected{% endif %}>{{ tf }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Instruments (comma-separated, optional)
+      <input type="text" name="instruments" value="{{ instruments_param }}" placeholder="e.g. NIFTY,RELIANCE,TCS">
+    </label>
+    <button type="submit">Scan</button>
+  </form>
+  <p class="hint">
+    Scans every instrument in the watchlist independently using the EXISTING intelligence pipeline and presents the
+    resulting opportunities in one view. Rows are ordered by a fixed <strong>presentational</strong> key (decision
+    classification, actionability, evidence, geometry, freshness, then instrument name) &mdash; <strong>not</strong> a
+    predictive score. The analysis always uses the latest <strong>COMPLETED</strong> candle; no future candle is read.
+    One instrument failing never aborts the whole scan.
+  </p>
+</section>
+
+{% if scan %}
+
+<section class="card">
+  <h2>Scan Summary</h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Watchlist</span><span class="value sm">{{ scan.watchlist_instruments | join(', ') }}</span></div>
+    <div class="metric"><span class="label">Setup Timeframe</span><span class="value">{{ scan.setup_timeframe }}</span></div>
+    <div class="metric"><span class="label">Context Timeframe</span><span class="value">{{ scan.context_timeframe or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Total</span><span class="value">{{ scan.total }}</span></div>
+    <div class="metric"><span class="label">Analyzed</span><span class="value ok">{{ scan.analyzed }}</span></div>
+    <div class="metric"><span class="label">Errored</span><span class="value {{ 'warn' if scan.errored else 'ok' }}">{{ scan.errored }}</span></div>
+    <div class="metric"><span class="label">Ready for Review</span><span class="value">{{ scan.actionable_count }}</span></div>
+  </div>
+  <p class="sm muted">{{ scan.rationale }}</p>
+  {% if scan.warnings %}
+  <ul class="warnings">
+    {% for w in scan.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Watchlist Opportunities</h2>
+  {% if scan.is_empty %}
+  <p>The watchlist is empty. Add instruments above and click Scan.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table class="scanner-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Instrument</th>
+          <th>Data</th>
+          <th>Fresh</th>
+          <th>Decision</th>
+          <th>Actionability</th>
+          <th>Evidence</th>
+          <th>Setup</th>
+          <th>Dir</th>
+          <th>Geom</th>
+          <th>Entry</th>
+          <th>Stop</th>
+          <th>Target 1</th>
+          <th>R:R</th>
+          <th>Review</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in scan.rows %}
+        <tr class="actionability-{{ row.actionability.value | lower }}">
+          <td>{{ row.rank }}</td>
+          <td class="inst">{{ row.instrument }}</td>
+          <td>{{ row.view.data_source.data_source or 'unavailable' }}</td>
+          <td class="{{ 'warn' if row.freshness_state == 'STALE' else ('muted' if row.freshness_state in ('UNAVAILABLE','INVALID') else 'ok') }}">{{ row.freshness_state }}</td>
+          <td class="decision-{{ (row.decision_classification or 'none') | lower }}">{{ row.decision_classification or 'none' }}</td>
+          <td>{{ row.actionability.value }}</td>
+          <td class="{{ 'warn' if row.evidence_strength == 'INSUFFICIENT' else ('muted' if row.evidence_strength in ('UNAVAILABLE',) else '') }}">{{ row.evidence_strength }}</td>
+          <td>{{ row.setup_type or 'none' }}</td>
+          <td class="{{ (row.direction or 'none') | lower }}">{{ row.direction or 'NONE' }}</td>
+          <td class="{{ 'ok' if row.geometry_available else 'warn' }}">{{ 'YES' if row.geometry_available else 'NO' }}</td>
+          <td>{{ row.entry | fmt_price }}</td>
+          <td>{{ row.stop | fmt_price }}</td>
+          <td>{{ row.target_1 | fmt_price }}</td>
+          <td>{{ row.risk_reward_ratio | fmt_ratio }}</td>
+          <td><a href="/?instrument={{ row.instrument }}&amp;timeframe={{ scan.setup_timeframe }}">open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <p class="sm muted">
+    Decision classification is the AUTHORITATIVE existing Sprint 11S output (REJECTED / WATCH / QUALIFIED /
+    PREFERRED), reused verbatim &mdash; never renamed to BUY/SELL, never upgraded or downgraded. Entry / stop /
+    target / R:R are reused verbatim from the Sprint 11R trade candidate. Target 2 is not supported by the
+    architecture. The row order is <strong>presentational</strong>, not a predictive ranking; direction (LONG/SHORT)
+    is deliberately not a ranking key. Freshness is data quality only and never alters the decision.
+  </p>
+</section>
+
+{% endif %}
+
+{% endblock %}

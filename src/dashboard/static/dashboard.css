@@ -145,3 +145,36 @@ body {
 
 .footer { max-width: 1280px; margin: 0 auto; padding: 16px 20px 30px; color: var(--muted); font-size: 0.78rem; }
 .footer p { margin: 0; }
+
+/* ============================================================
+   NAV + MULTI-INSTRUMENT SCANNER (Product Phase 2)
+   ============================================================ */
+.nav { margin-top: 10px; display: flex; gap: 18px; }
+.nav a {
+  color: var(--accent); text-decoration: none; font-size: 0.88rem; font-weight: 600;
+  padding: 4px 0; border-bottom: 2px solid transparent;
+}
+.nav a:hover { border-bottom-color: var(--accent); }
+
+.table-wrap { width: 100%; overflow-x: auto; }
+.scanner-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.scanner-table th, .scanner-table td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; text-align: left;
+}
+.scanner-table th {
+  color: var(--muted); font-weight: 600; font-size: 0.78rem;
+  text-transform: uppercase; letter-spacing: 0.03em; position: sticky; top: 0;
+  background: var(--panel-2);
+}
+.scanner-table td.inst { font-weight: 700; color: var(--text); }
+.scanner-table tr:hover { background: var(--panel-2); }
+.scanner-table tr.actionability-ready_for_review { background: rgba(63,185,80,0.06); }
+.scanner-table tr.actionability-invalid { opacity: 0.6; }
+.scanner-table a { color: var(--accent); text-decoration: none; font-weight: 600; }
+
+.decision-preferred { color: var(--green); font-weight: 700; }
+.decision-qualified { color: var(--green); }
+.decision-watch { color: var(--yellow); }
+.decision-rejected { color: var(--red); }
+.long { color: var(--green); }
+.short { color: var(--red); }

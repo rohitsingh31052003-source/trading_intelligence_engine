@@ -33,9 +33,11 @@ from dashboard.services import (
     AnalysisRequest,
     DashboardAnalysisService,
     EvidenceSource,
+    ScanRequest,
     default_service,
 )
-from dashboard.views import to_jsonable
+from dashboard.views import scan_view_to_jsonable, to_jsonable
+from dashboard.watchlist import Watchlist
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES_DIR = _BASE_DIR / "templates"
@@ -243,6 +245,55 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             "instruments": list(svc.available_instruments()),
             "timeframes": list(svc.available_timeframes()),
         }
+
+    # ------------------------------------------------------------
+    # MULTI-INSTRUMENT SCANNER (Product Phase 2)
+    # ------------------------------------------------------------
+
+    @app.get("/scan", response_class=HTMLResponse)
+    def scanner_page(
+        request: Request,
+        timeframe: str = "15m",
+        instruments: str = "",
+    ):
+        """Multi-instrument scanner / watchlist view (Product Phase 2)."""
+
+        svc = _service()
+        if instruments:
+            parsed = [i.strip() for i in instruments.split(",") if i.strip()]
+            watchlist = Watchlist(parsed) if parsed else svc.default_watchlist()
+        else:
+            watchlist = svc.default_watchlist()
+        scan = svc.scan_watchlist(
+            ScanRequest(watchlist=watchlist, setup_timeframe=timeframe),
+        )
+        ctx = {
+            "request": request,
+            "timeframes": svc.available_timeframes(),
+            "selected_timeframe": timeframe,
+            "instruments_param": instruments,
+            "scan": scan,
+            "scan_json": scan_view_to_jsonable(scan),
+        }
+        return templates.TemplateResponse(request, "scanner.html", ctx)
+
+    @app.get("/api/scan", response_class=JSONResponse)
+    def api_scan(
+        timeframe: str = "15m",
+        instruments: str = "",
+    ):
+        """Structured JSON for the multi-instrument scanner (Product Phase 2)."""
+
+        svc = _service()
+        if instruments:
+            parsed = [i.strip() for i in instruments.split(",") if i.strip()]
+            watchlist = Watchlist(parsed) if parsed else svc.default_watchlist()
+        else:
+            watchlist = svc.default_watchlist()
+        scan = svc.scan_watchlist(
+            ScanRequest(watchlist=watchlist, setup_timeframe=timeframe),
+        )
+        return scan_view_to_jsonable(scan)
 
     return app
 

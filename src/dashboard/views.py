@@ -799,6 +799,323 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
     }
 
 
+# ============================================================
+# MULTI-INSTRUMENT SCANNER PRESENTATION (Product Phase 2)
+# ============================================================
+
+
+#: Deterministic presentational rank for each Sprint 11S decision
+#: classification. Lower sorts first. This is PRESENTATIONAL ORDERING
+#: ONLY (stronger classification first) — it is NOT a probability, NOT a
+#: predictive score, and NEVER renames the classification. The mapping
+#: is fixed and documented; it cannot be configured because configuring
+#: it would risk silently re-ranking the AUTHORITATIVE decision.
+_DECISION_RANK: dict[str, int] = {
+    "PREFERRED": 0,
+    "QUALIFIED": 1,
+    "WATCH": 2,
+    "REJECTED": 3,
+}
+
+#: Deterministic presentational rank for each presentation
+#: :class:`ActionabilityState`. Lower sorts first (most reviewable first).
+#: PRESENTATIONAL ORDERING ONLY.
+_ACTIONABILITY_RANK: dict[ActionabilityState, int] = {
+    ActionabilityState.READY_FOR_REVIEW: 0,
+    ActionabilityState.INSUFFICIENT_EVIDENCE: 1,
+    ActionabilityState.WAIT: 2,
+    ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE: 3,
+    ActionabilityState.NO_OPPORTUNITY: 4,
+    ActionabilityState.INVALID: 5,
+}
+
+#: Deterministic presentational rank for each Sprint 11Y evidence
+#: strength. Lower sorts first (stronger evidence first). A missing
+#: corpus (``"UNAVAILABLE"`` / unknown) sorts LAST so that an
+#: opportunity is never promoted on the basis of absent evidence.
+_EVIDENCE_RANK: dict[str, int] = {
+    "STRONG": 0,
+    "MODERATE": 1,
+    "WEAK": 2,
+    "INSUFFICIENT": 3,
+    "UNAVAILABLE": 4,
+}
+
+#: Deterministic presentational rank for Product Phase 1 freshness.
+#: Lower sorts first (freshest first). Freshness is DATA QUALITY ONLY —
+#: it never alters the decision; it is a tie-breaker AFTER decision /
+#: actionability / evidence.
+_FRESHNESS_RANK: dict[str, int] = {
+    "CURRENT": 0,
+    "STALE": 1,
+    "UNAVAILABLE": 2,
+    "INVALID": 2,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class WatchlistRowView:
+    """
+    One row of the multi-instrument scanner view (Product Phase 2).
+
+    This is a READ-ONLY presentation projection that WRAPS the reused
+    :class:`DashboardTradeView` for one instrument + timeframe and adds
+    NOTHING new: every displayed value (decision, actionability,
+    geometry, evidence, freshness, data source) is read from the reused
+    trade view. The scanner invents NO new score, NO probability, NO
+    predictive ranking.
+
+    Attributes:
+
+    instrument
+        Canonical instrument name (reused).
+
+    view
+        The reused :class:`DashboardTradeView` for this instrument /
+        timeframe. Retained BY REFERENCE; never modified.
+
+    error
+        ``True`` when this instrument could not be analysed (provider
+        failure / unsupported instrument / unsupported timeframe / empty
+        data / invalid analysis). The row then carries an honest
+        ``ActionabilityState.INVALID`` view with a descriptive reason —
+        never a fabricated opportunity. Failure isolation: one bad
+        symbol never aborts the whole scan.
+
+    rank
+        1-based PRESENTATIONAL order within the scan (1 = most
+        reviewable). This is NOT a market-level intelligence rank and
+        NOT a probability — it is the deterministic sort position
+        produced by :func:`scanner_rank_key`.
+    """
+
+    instrument: str = ""
+    view: DashboardTradeView = field(default_factory=DashboardTradeView)
+    error: bool = False
+    rank: int = 0
+
+    @property
+    def decision_classification(self) -> str:
+        return self.view.decision.decision_classification
+
+    @property
+    def actionability(self) -> ActionabilityState:
+        return self.view.actionability
+
+    @property
+    def evidence_strength(self) -> str:
+        return self.view.evidence.evidence_strength
+
+    @property
+    def freshness_state(self) -> str:
+        return self.view.data_source.freshness_state
+
+    @property
+    def geometry_available(self) -> bool:
+        return self.view.geometry.geometry_available
+
+    @property
+    def setup_type(self) -> str:
+        return self.view.setup_type
+
+    @property
+    def direction(self) -> str:
+        return self.view.geometry.direction
+
+    @property
+    def entry(self) -> float | None:
+        return self.view.geometry.entry
+
+    @property
+    def stop(self) -> float | None:
+        return self.view.geometry.stop
+
+    @property
+    def target_1(self) -> float | None:
+        return self.view.geometry.target_1
+
+    @property
+    def risk_reward_ratio(self) -> float | None:
+        return self.view.geometry.risk_reward_ratio
+
+    @property
+    def complete(self) -> bool:
+        return self.view.complete
+
+
+def scanner_rank_key(row: WatchlistRowView) -> tuple[int, int, int, int, int, str]:
+    """
+    Build the deterministic PRESENTATIONAL ordering key for a row.
+
+    This is **presentation ordering**, NOT a trading score, NOT a
+    probability, and NOT a new intelligence layer. Every component is
+    read from the AUTHORITATIVE existing outputs (Sprint 11S decision
+    classification, the derived actionability mirror, Sprint 11Y
+    evidence strength, Product Phase 1 freshness, Sprint 11R geometry
+    completeness). The mapping is fixed and documented.
+
+    Order (lower sorts first — most reviewable / freshest first):
+
+    1. Decision classification strength
+       (``PREFERRED`` < ``QUALIFIED`` < ``WATCH`` < ``REJECTED`` < none).
+    2. Actionability / readiness mirror
+       (``READY_FOR_REVIEW`` < ``INSUFFICIENT_EVIDENCE`` < ``WAIT`` <
+       ``TRADE_GEOMETRY_UNAVAILABLE`` < ``NO_OPPORTUNITY`` < ``INVALID``).
+    3. Evidence strength (when an offline corpus is attached)
+       (``STRONG`` < ``MODERATE`` < ``WEAK`` < ``INSUFFICIENT`` <
+       ``UNAVAILABLE``). Missing evidence sorts LAST — an opportunity is
+       never promoted on absent evidence.
+    4. Geometry availability (complete geometry first).
+    5. Freshness (``CURRENT`` < ``STALE`` < ``UNAVAILABLE`` / ``INVALID``)
+       — DATA QUALITY tie-break only, never alters the decision.
+    6. Instrument name ascending — the final deterministic tie-break so
+       two scans of identical data always produce identical ordering
+       regardless of input watchlist order.
+
+    Direction (LONG / SHORT) is DELIBERATELY NOT a ranking key: the
+    scanner never biases a LONG above a SHORT (or vice versa) on
+    direction alone.
+    """
+
+    return (
+        _DECISION_RANK.get(
+            (row.decision_classification or "").upper(), 4,
+        ),
+        _ACTIONABILITY_RANK.get(row.actionability, 5),
+        _EVIDENCE_RANK.get((row.evidence_strength or "").upper(), 4),
+        0 if row.geometry_available else 1,
+        _FRESHNESS_RANK.get((row.freshness_state or "").upper(), 2),
+        row.instrument,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WatchlistScanView:
+    """
+    The multi-instrument scanner view for one watchlist + timeframe
+    (Product Phase 2).
+
+    This is a READ-ONLY bundle of reused per-instrument
+    :class:`DashboardTradeView` outputs, ordered by the deterministic
+    PRESENTATIONAL key (:func:`scanner_rank_key`). It implements NO new
+    intelligence, NO scoring and NO prediction. Each row reuses the
+    existing decision / geometry / evidence / freshness verbatim.
+
+    Attributes:
+
+    watchlist_instruments
+        Tuple of canonical instrument names scanned (deterministic
+        sorted order, independent of input order).
+
+    setup_timeframe / context_timeframe
+        The timeframe pair used for every instrument (reused).
+
+    rows
+        Tuple of :class:`WatchlistRowView` ordered by
+        :func:`scanner_rank_key` (presentational, not predictive).
+
+    total / analyzed / errored / actionable_count
+        Descriptive counts. ``errored`` counts rows that could not be
+        analysed (failure isolation — they appear last as INVALID and
+        never abort the scan). ``actionable_count`` counts rows whose
+        actionability is :attr:`ActionabilityState.READY_FOR_REVIEW`.
+
+    warnings
+        Tuple of human-readable honesty warnings (descriptive only).
+
+    rationale
+        Descriptive explanation of the presentational ordering.
+    """
+
+    watchlist_instruments: tuple[str, ...] = ()
+    setup_timeframe: str = ""
+    context_timeframe: str = ""
+    rows: tuple[WatchlistRowView, ...] = ()
+    total: int = 0
+    analyzed: int = 0
+    errored: int = 0
+    actionable_count: int = 0
+    warnings: tuple[str, ...] = ()
+    rationale: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.rows) == 0
+
+    @property
+    def has_errors(self) -> bool:
+        return self.errored > 0
+
+
+def scan_view_to_jsonable(scan: WatchlistScanView) -> dict[str, Any]:
+    """
+    Convert a :class:`WatchlistScanView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. Each row surfaces the reused
+    trade view's headline fields WITHOUT recomputing anything. The five
+    concerns (decision / geometry / evidence / actionability / data
+    source) are kept separate — never collapsed into one signal / score.
+    """
+
+    rows = []
+    for row in scan.rows:
+        v = row.view
+        rows.append(
+            {
+                "rank": row.rank,
+                "instrument": row.instrument,
+                "error": row.error,
+                "complete": row.complete,
+                "data_source": v.data_source.data_source,
+                "provider_status": v.data_source.provider_status,
+                "freshness_state": v.data_source.freshness_state,
+                "latest_completed_candle_timestamp": (
+                    v.data_source.latest_completed_candle_timestamp.isoformat()
+                    if v.data_source.latest_completed_candle_timestamp
+                    else None
+                ),
+                "decision_classification": v.decision.decision_classification,
+                "decision_score": v.decision.decision_score,
+                "opportunity_status": v.decision.opportunity_status,
+                "eligible": v.decision.eligible,
+                "actionability": v.actionability.value,
+                "actionability_reason": v.actionability_detail.reason,
+                "evidence_strength": v.evidence.evidence_strength,
+                "evidence_available": v.evidence.available,
+                "setup_type": v.setup_type,
+                "direction": v.geometry.direction,
+                "geometry_available": v.geometry.geometry_available,
+                "entry": v.geometry.entry,
+                "stop": v.geometry.stop,
+                "target_1": v.geometry.target_1,
+                "target_2": v.geometry.target_2,
+                "target_2_supported": v.geometry.target_2_supported,
+                "risk_distance": v.geometry.risk_distance,
+                "reward_distance": v.geometry.reward_distance,
+                "risk_reward_ratio": v.geometry.risk_reward_ratio,
+                "mtf_alignment": v.market_overview.mtf_alignment,
+                "htf_trend": v.market_overview.htf_trend,
+                "ltf_trend": v.market_overview.ltf_trend,
+                "review_url": (
+                    f"/?instrument={row.instrument}"
+                    f"&timeframe={scan.setup_timeframe}"
+                ),
+            },
+        )
+    return {
+        "watchlist_instruments": list(scan.watchlist_instruments),
+        "setup_timeframe": scan.setup_timeframe,
+        "context_timeframe": scan.context_timeframe,
+        "rows": rows,
+        "total": scan.total,
+        "analyzed": scan.analyzed,
+        "errored": scan.errored,
+        "actionable_count": scan.actionable_count,
+        "warnings": list(scan.warnings),
+        "rationale": scan.rationale,
+    }
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -808,7 +1125,11 @@ __all__ = [
     "EvidenceView",
     "GeometryView",
     "MarketOverviewView",
+    "WatchlistRowView",
+    "WatchlistScanView",
     "derive_actionability",
     "derive_actionability_reason",
+    "scan_view_to_jsonable",
+    "scanner_rank_key",
     "to_jsonable",
 ]
