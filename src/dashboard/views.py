@@ -524,6 +524,62 @@ class DecisionView:
 
 
 @dataclass(frozen=True, slots=True)
+class DataSourceView:
+    """
+    Presentation view of the DATA SOURCE / FRESHNESS metadata (Product
+    Phase 1).
+
+    This is DATA QUALITY / PRODUCT STATE only. It NEVER alters the
+    intelligence engine's decision semantics — it is surfaced as metadata
+    + presentation warnings. Every field is either an OBSERVED value
+    copied verbatim from the provider's :class:`InstrumentSeries` or a
+    DERIVED label. Nothing is fabricated: a missing/failed provider
+    response is reported honestly as ``UNAVAILABLE`` / ``NOT_READY`` /
+    ``ERROR``.
+
+    Attributes:
+
+    data_source
+        Name of the data source (``"fixture"`` / ``"yahoo"`` / ``""``).
+
+    provider_status
+        :class:`dashboard.data_provider.ProviderStatus` name, or ``""``.
+
+    freshness_state
+        :class:`dashboard.data_provider.FreshnessState` name, or ``""``.
+        DATA QUALITY only — never a trading signal.
+
+    latest_candle_timestamp
+        Timestamp of the latest candle the provider saw (may be a
+        forming candle), or ``None``.
+
+    latest_completed_candle_timestamp
+        Timestamp of the latest COMPLETED setup candle — the analysis
+        boundary. The service uses this as ``evaluation_time``.
+
+    forming_candle_present
+        Whether a currently-forming setup candle exists (DISPLAY ONLY;
+        never fed to the engine).
+
+    last_successful_fetch_time
+        When the provider last successfully fetched data, or ``None``.
+
+    rejected_future_count
+        Number of future-dated candles rejected by the boundary (honest
+        reporting of malformed provider output).
+    """
+
+    data_source: str = ""
+    provider_status: str = ""
+    freshness_state: str = ""
+    latest_candle_timestamp: datetime | None = None
+    latest_completed_candle_timestamp: datetime | None = None
+    forming_candle_present: bool = False
+    last_successful_fetch_time: datetime | None = None
+    rejected_future_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardTradeView:
     """
     The single coherent presentation artifact for one instrument at one
@@ -602,6 +658,7 @@ class DashboardTradeView:
     actionability_detail: ActionabilityDetail = field(
         default_factory=ActionabilityDetail,
     )
+    data_source: DataSourceView = field(default_factory=DataSourceView)
     reason: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -717,6 +774,28 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
             "profit_factor": view.evidence.profit_factor,
             "limitations": view.evidence.limitations,
         },
+        "data_source": {
+            "data_source": view.data_source.data_source,
+            "provider_status": view.data_source.provider_status,
+            "freshness_state": view.data_source.freshness_state,
+            "latest_candle_timestamp": (
+                view.data_source.latest_candle_timestamp.isoformat()
+                if view.data_source.latest_candle_timestamp
+                else None
+            ),
+            "latest_completed_candle_timestamp": (
+                view.data_source.latest_completed_candle_timestamp.isoformat()
+                if view.data_source.latest_completed_candle_timestamp
+                else None
+            ),
+            "forming_candle_present": view.data_source.forming_candle_present,
+            "last_successful_fetch_time": (
+                view.data_source.last_successful_fetch_time.isoformat()
+                if view.data_source.last_successful_fetch_time
+                else None
+            ),
+            "rejected_future_count": view.data_source.rejected_future_count,
+        },
     }
 
 
@@ -724,6 +803,7 @@ __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
     "DashboardTradeView",
+    "DataSourceView",
     "DecisionView",
     "EvidenceView",
     "GeometryView",

@@ -26,6 +26,36 @@ or `python -m dashboard.app`. Env vars: `DASHBOARD_PROVIDER` (`fixture` default 
 (optional path to a serialized Sprint 11Y `HistoricalEvidenceReport` to enable the
 evidence section).
 
+## Live / near-live market data (Product Phase 1)
+
+The dashboard can run on two data sources via `DASHBOARD_PROVIDER`:
+
+- `fixture` (default) — deterministic local OHLCV fixtures, no network. Safe for
+  research, demos and tests.
+- `yahoo` — optional live / near-live Yahoo Finance data (requires the optional
+  `pandas` / `yfinance` packages). Select it with `DASHBOARD_PROVIDER=yahoo`.
+
+```bash
+pip install pandas yfinance
+DASHBOARD_PROVIDER=yahoo python -m uvicorn dashboard.app:app --reload
+```
+
+The live provider is **data integration only** — "live data" does **not** mean
+"live trading". It does not predict the market, does not generate signals, and
+does not modify the existing decision engine. The analysis always uses the
+latest **COMPLETED** candle; a currently-forming / in-progress candle is never
+fed to the intelligence engine (it is shown for display only), and future-dated
+candles returned by the provider are rejected. Yahoo-specific symbol formatting
+(e.g. `NIFTY` -> `^NSEI`, `RELIANCE` -> `RELIANCE.NS`) is isolated inside the
+provider. Any provider failure (network, timeout, empty response, unsupported
+instrument / timeframe, malformed candle) is reported honestly as an
+"unavailable" state — the dashboard never crashes, never fabricates data, never
+substitutes stale data for current data, and never silently falls back from a
+failed live provider to fixture data. Supported Yahoo timeframes are the native
+intervals `1m`/`2m`/`5m`/`15m`/`30m`/`60m`/`1h`/`90m`/`1D` (no resampling /
+fabrication of other intervals). Freshness (`CURRENT` / `STALE` / `UNAVAILABLE`
+/ `INVALID`) is data quality / product state only — it never alters the decision.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures

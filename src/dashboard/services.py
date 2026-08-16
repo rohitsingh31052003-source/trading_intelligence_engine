@@ -58,6 +58,10 @@ from dashboard.data_provider import (
     DashboardDataProvider,
     FIXTURE_INSTRUMENTS,
     FixtureDataProvider,
+    FreshnessConfig,
+    FreshnessState,
+    InstrumentSeries,
+    ProviderStatus,
     SUPPORTED_TIMEFRAMES,
     context_timeframe_for,
     make_provider,
@@ -66,6 +70,7 @@ from dashboard.views import (
     ActionabilityDetail,
     ActionabilityState,
     DashboardTradeView,
+    DataSourceView,
     DecisionView,
     EvidenceView,
     GeometryView,
@@ -159,8 +164,30 @@ class DashboardAnalysisService:
         min_history: int = 10,
         staleness_seconds: int = DEFAULT_STALENESS_SECONDS,
         max_chart_candles: int = 120,
+        freshness_config: FreshnessConfig | None = None,
     ) -> None:
-        self.provider = provider or FixtureDataProvider()
+        # Freshness config is DATA QUALITY only — it never alters the
+        # intelligence engine's decision semantics. When the provider was
+        # built without one, derive a default from the legacy
+        # ``staleness_seconds`` so behavior stays backward-compatible.
+        if freshness_config is None:
+            freshness_config = FreshnessConfig(
+                default_staleness_seconds=staleness_seconds,
+            )
+        self.freshness_config = freshness_config
+        if provider is None:
+            provider = FixtureDataProvider(freshness_config=freshness_config)
+        self.provider = provider
+        # If the provider accepts a freshness_config and was constructed
+        # externally, propagate the service-level config where supported
+        # (best-effort; providers are duck-typed).
+        if hasattr(provider, "freshness_config") and getattr(
+            provider, "freshness_config", None,
+        ) is None:
+            try:
+                object.__setattr__(provider, "freshness_config", freshness_config)
+            except (AttributeError, TypeError):
+                pass
         self.scanner = scanner or MarketScanner(
             MarketScanConfig(min_history=min_history),
         )
@@ -212,6 +239,7 @@ class DashboardAnalysisService:
         if not series.available or not series.setup_candles:
             return self._unavailable_view(
                 request, ctx_tf or "", series.reason or "no setup data",
+                series=series,
             )
 
         # --- Determine the context timeframe ---
@@ -244,9 +272,15 @@ class DashboardAnalysisService:
             setup_candles=series.setup_candles,
         )
 
-        # The evaluation time is the close of the latest completed
-        # setup candle — i.e. NOW in the available information set.
-        evaluation_time = series.setup_candles[-1].timestamp
+        # The evaluation point is the close of the latest COMPLETED
+        # setup candle — established by the provider's completed-candle
+        # boundary. This is NEVER the forming candle. When the provider
+        # supplies an explicit latest_completed_candle_timestamp we use
+        # it; otherwise we fall back to the last setup candle's
+        # timestamp (which, post-boundary, IS the latest completed).
+        evaluation_time = series.latest_completed_candle_timestamp
+        if evaluation_time is None:
+            evaluation_time = series.setup_candles[-1].timestamp
         scan_result_obj = scanner.scan(
             [dataset], evaluation_time=evaluation_time, engines=engines,
         )
@@ -256,11 +290,12 @@ class DashboardAnalysisService:
         else:  # pragma: no cover - defensive
             return self._unavailable_view(
                 request, ctx_tf or "", "scanner produced no result",
+                series=series,
             )
 
         # --- Project into the presentation view ---
         view = self._build_view(
-            request, setup_tf, ctx_tf or "", instrument_result,
+            request, setup_tf, ctx_tf or "", instrument_result, series=series,
         )
         return view
 
@@ -274,6 +309,8 @@ class DashboardAnalysisService:
         setup_tf: str,
         ctx_tf: str,
         result: InstrumentScanResult,
+        *,
+        series: "InstrumentSeries | None" = None,
     ) -> DashboardTradeView:
         decision = result.decision
         opportunity = result.opportunity
@@ -394,6 +431,21 @@ class DashboardAnalysisService:
                 "Latest candle appears stale relative to the configured "
                 "staleness threshold.",
             )
+        if series is not None and series.freshness_state == FreshnessState.STALE:
+            warnings.append(
+                "Data source reports the latest completed candle as STALE "
+                "relative to the configured freshness threshold. The "
+                "analysis is still produced over completed candles; "
+                "freshness is data quality, not a trading signal.",
+            )
+        if series is not None and series.rejected_future_count > 0:
+            warnings.append(
+                f"Provider returned {series.rejected_future_count} "
+                "future-dated candle(s); they were rejected and never "
+                "used by the analysis.",
+            )
+
+        data_source_view = self._build_data_source_view(series)
 
         return DashboardTradeView(
             instrument=request.instrument,
@@ -409,6 +461,7 @@ class DashboardAnalysisService:
             setup_type=setup_type,
             actionability=actionability,
             actionability_detail=actionability_detail,
+            data_source=data_source_view,
             reason=result.reason or "",
             warnings=tuple(warnings),
         )
@@ -497,12 +550,65 @@ class DashboardAnalysisService:
             )
         return self.evidence_source.evidence_for(request, result, candidate)
 
+    @staticmethod
+    def _build_data_source_view(
+        series: "InstrumentSeries | None",
+    ) -> DataSourceView:
+        """Project the provider's :class:`InstrumentSeries` metadata.
+
+        Pure projection — DATA QUALITY only; never alters decision
+        semantics. When no series is available (e.g. a hand-built
+        unavailable view), every field is the honest empty/None
+        sentinel.
+        """
+
+        if series is None:
+            return DataSourceView()
+        return DataSourceView(
+            data_source=series.data_source,
+            provider_status=series.provider_status.value,
+            freshness_state=series.freshness_state.value,
+            latest_candle_timestamp=series.latest_candle_timestamp,
+            latest_completed_candle_timestamp=(
+                series.latest_completed_candle_timestamp
+            ),
+            forming_candle_present=series.forming_setup_candle is not None,
+            last_successful_fetch_time=series.last_successful_fetch_time,
+            rejected_future_count=series.rejected_future_count,
+        )
+
     def _unavailable_view(
         self,
         request: AnalysisRequest,
         ctx_tf: str,
         reason: str,
+        *,
+        series: "InstrumentSeries | None" = None,
     ) -> DashboardTradeView:
+        data_source_view = self._build_data_source_view(series)
+        warnings: list[str] = [
+            "Market data unavailable for the selected instrument / "
+            "timeframe. No analysis, geometry or evidence is "
+            "fabricated.",
+        ]
+        if (
+            series is not None
+            and series.provider_status == ProviderStatus.ERROR
+        ):
+            warnings.append(
+                "Provider reported an ERROR fetching market data; "
+                "the failure is NOT converted into a successful "
+                "analysis and NO fixture fallback was applied.",
+            )
+        if (
+            series is not None
+            and series.provider_status == ProviderStatus.NOT_READY
+        ):
+            warnings.append(
+                "Provider is NOT READY (optional dependency missing or "
+                "init failed); live data is unavailable. Select the "
+                "fixture data source for a runnable deterministic view.",
+            )
         return DashboardTradeView(
             instrument=request.instrument,
             context_timeframe=ctx_tf,
@@ -526,12 +632,9 @@ class DashboardAnalysisService:
                 state=ActionabilityState.INVALID,
                 reason=derive_actionability_reason(ActionabilityState.INVALID),
             ),
+            data_source=data_source_view,
             reason=reason,
-            warnings=(
-                "Market data unavailable for the selected instrument / "
-                "timeframe. No analysis, geometry or evidence is "
-                "fabricated.",
-            ),
+            warnings=tuple(warnings),
         )
 
     # ------------------------------------------------------------
@@ -719,15 +822,24 @@ class EvidenceSource:
 def default_service(
     provider_name: str = "fixture",
     evidence_report: Any | None = None,
+    *,
+    freshness_config: FreshnessConfig | None = None,
+    symbol_map: dict[str, str] | None = None,
 ) -> DashboardAnalysisService:
     """Build a dashboard service with sensible defaults."""
 
-    provider = make_provider(provider_name)
+    provider = make_provider(
+        provider_name,
+        freshness_config=freshness_config,
+        symbol_map=symbol_map,
+    )
     evidence_source = (
         EvidenceSource(evidence_report) if evidence_report is not None else None
     )
     return DashboardAnalysisService(
-        provider=provider, evidence_source=evidence_source,
+        provider=provider,
+        evidence_source=evidence_source,
+        freshness_config=freshness_config,
     )
 
 

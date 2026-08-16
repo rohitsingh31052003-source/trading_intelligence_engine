@@ -86,7 +86,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Mapping, Sequence
 
 from engine.config.market_scan_config import (
@@ -112,10 +112,16 @@ from engine.models.opportunity import (
 from engine.models.trade_decision import TradeDecision
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 def _latest_completed_before(
     candles: Sequence[OHLCVCandle],
     cutoff: datetime,
 ) -> OHLCVCandle | None:
+    cutoff = _ensure_utc(cutoff)
     """
     Return the latest candle whose timestamp is strictly before
     ``cutoff``.
@@ -127,9 +133,14 @@ def _latest_completed_before(
     time.
     """
 
-    completed = [c for c in candles if c.timestamp < cutoff]
+    completed = [
+        c for c in candles
+        if _ensure_utc(c.timestamp) < cutoff
+    ]
+
     if not completed:
         return None
+
     return completed[-1]
 
 
@@ -145,9 +156,10 @@ def _latest_completed_at_or_before(
     evaluation time (the evaluation time IS the setup-timeframe candle
     close we scan from).
     """
-
+    cutoff = _ensure_utc(cutoff)
+    
     for i in range(len(candles) - 1, -1, -1):
-        if candles[i].timestamp <= cutoff:
+        if _ensure_utc(candles[i].timestamp) <= cutoff:
             return candles[i], i
     return None, -1
 

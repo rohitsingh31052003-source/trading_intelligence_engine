@@ -148,11 +148,27 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
     @app.get("/health", response_class=JSONResponse)
     def health() -> dict:
         svc = _service()
+        provider = svc.provider
+        data_source = getattr(provider, "data_source", "") or type(
+            provider,
+        ).__name__
+        # The provider's own supported timeframes (honest capability
+        # reporting), when available.
+        supported_timeframes: list[str] = []
+        try:
+            supported_timeframes = [
+                tf for tf in svc.available_timeframes()
+                if svc.is_timeframe_supported(tf)
+            ]
+        except Exception:  # pragma: no cover - defensive
+            supported_timeframes = []
         return {
             "status": "ok",
-            "provider": type(svc.provider).__name__,
+            "provider": type(provider).__name__,
+            "data_source": data_source,
             "instruments": list(svc.available_instruments()),
             "timeframes": list(svc.available_timeframes()),
+            "supported_timeframes": supported_timeframes,
             "evidence_attached": svc.evidence_source is not None
             and svc.evidence_source.evidence_report is not None,
         }
