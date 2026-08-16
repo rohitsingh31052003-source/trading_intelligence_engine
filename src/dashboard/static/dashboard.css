@@ -62,7 +62,9 @@ body {
 .grid { display: grid; gap: 12px; }
 .grid-3 { grid-template-columns: repeat(3, 1fr); }
 .grid-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1024px) { .grid-4 { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 760px) { .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .grid-3, .grid-4 { grid-template-columns: 1fr; } .selector-form { flex-direction: column; align-items: stretch; } }
 
 .metric {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
@@ -93,15 +95,41 @@ body {
 .no-trade p { margin: 6px 0; color: var(--text); }
 .no-trade p.sm { color: var(--muted); font-size: 0.8rem; }
 
-.actionability {
-  display: inline-block; font-size: 1.3rem; font-weight: 700; padding: 8px 18px;
-  border-radius: 8px; margin-bottom: 10px;
+/* Actionability headline card (trade-review layout). */
+.actionability-card { border-left: 4px solid var(--muted); }
+.actionability-card .actionability-head {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px;
 }
-.actionability-preferred_setup { background: rgba(63,185,80,0.15); color: var(--green); }
-.actionability-qualified_setup { background: rgba(88,166,255,0.15); color: var(--accent); }
-.actionability-watch { background: rgba(210,153,34,0.15); color: var(--yellow); }
-.actionability-no_opportunity { background: rgba(139,148,158,0.15); color: var(--muted); }
-.actionability-unavailable { background: rgba(248,81,73,0.12); color: var(--red); }
+.actionability-card .actionability-label {
+  color: var(--muted); font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.actionability-card .actionability-state {
+  font-size: 1.5rem; font-weight: 700; letter-spacing: 0.02em;
+}
+.actionability-card .actionability-reason {
+  margin: 4px 0 8px; font-size: 0.92rem;
+}
+.actionability-ready_for_review { border-left-color: var(--green); }
+.actionability-ready_for_review .actionability-state { color: var(--green); }
+.actionability-wait { border-left-color: var(--yellow); }
+.actionability-wait .actionability-state { color: var(--yellow); }
+.actionability-trade_geometry_unavailable { border-left-color: var(--yellow); }
+.actionability-trade_geometry_unavailable .actionability-state { color: var(--yellow); }
+.actionability-insufficient_evidence { border-left-color: var(--yellow); }
+.actionability-insufficient_evidence .actionability-state { color: var(--yellow); }
+.actionability-no_opportunity { border-left-color: var(--muted); }
+.actionability-no_opportunity .actionability-state { color: var(--muted); }
+.actionability-invalid { border-left-color: var(--red); }
+.actionability-invalid .actionability-state { color: var(--red); }
+
+/* R:R visual bar (presentation only; values reused verbatim). */
+.rr-bar-cell .rr-bar {
+  display: flex; height: 12px; border-radius: 6px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border); margin: 4px 0;
+}
+.rr-bar .rr-risk { background: rgba(248,81,73,0.55); }
+.rr-bar .rr-reward { background: rgba(63,185,80,0.55); }
 
 .rationale { color: var(--muted); margin-top: 10px; }
 .sm { font-size: 0.82rem; }
@@ -113,7 +141,7 @@ body {
 .warn { color: var(--yellow); font-size: 0.85rem; margin: 8px 0 0; }
 
 #chart-container { width: 100%; overflow-x: auto; }
-#chart-container canvas { display: block; background: var(--panel-2); border-radius: 8px; }
+#chart-container canvas { display: block; background: var(--panel-2); border-radius: 8px; max-width: 100%; }
 
 .footer { max-width: 1280px; margin: 0 auto; padding: 16px 20px 30px; color: var(--muted); font-size: 0.78rem; }
 .footer p { margin: 0; }

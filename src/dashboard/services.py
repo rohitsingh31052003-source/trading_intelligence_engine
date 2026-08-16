@@ -63,6 +63,7 @@ from dashboard.data_provider import (
     make_provider,
 )
 from dashboard.views import (
+    ActionabilityDetail,
     ActionabilityState,
     DashboardTradeView,
     DecisionView,
@@ -70,6 +71,7 @@ from dashboard.views import (
     GeometryView,
     MarketOverviewView,
     derive_actionability,
+    derive_actionability_reason,
 )
 
 #: Honest staleness threshold for the "data stale" warning. The latest
@@ -341,11 +343,23 @@ class DashboardAnalysisService:
         evidence_view = self._build_evidence_view(request, result, candidate)
 
         # --- Actionability (derived presentation mirror) ---
+        # Evidence strength is surfaced to the actionability layer ONLY when
+        # an offline corpus is attached; a missing corpus is NOT treated as
+        # INSUFFICIENT evidence (it is surfaced as a separate warning).
+        evidence_strength_for_actionability: str | None = None
+        if evidence_view.available:
+            evidence_strength_for_actionability = evidence_view.evidence_strength
         actionability = derive_actionability(
             complete=bool(result.complete),
             decision_classification=decision_classification,
             opportunity_status=opportunity_status,
             eligible=eligible,
+            geometry_available=geom_complete,
+            evidence_strength=evidence_strength_for_actionability,
+        )
+        actionability_detail = ActionabilityDetail(
+            state=actionability,
+            reason=derive_actionability_reason(actionability),
         )
 
         # --- Honesty warnings ---
@@ -386,7 +400,7 @@ class DashboardAnalysisService:
             context_timeframe=ctx_tf,
             setup_timeframe=setup_tf,
             evaluation_timestamp=result.timestamp,
-            scan_status=result.alignment and _scan_status_name(result) or "NO_OPPORTUNITY",
+            scan_status=_scan_status_name(result),
             complete=bool(result.complete),
             market_overview=market_overview,
             decision=decision_view,
@@ -394,6 +408,7 @@ class DashboardAnalysisService:
             evidence=evidence_view,
             setup_type=setup_type,
             actionability=actionability,
+            actionability_detail=actionability_detail,
             reason=result.reason or "",
             warnings=tuple(warnings),
         )
@@ -506,7 +521,11 @@ class DashboardAnalysisService:
                 ),
             ),
             setup_type="",
-            actionability=ActionabilityState.UNAVAILABLE,
+            actionability=ActionabilityState.INVALID,
+            actionability_detail=ActionabilityDetail(
+                state=ActionabilityState.INVALID,
+                reason=derive_actionability_reason(ActionabilityState.INVALID),
+            ),
             reason=reason,
             warnings=(
                 "Market data unavailable for the selected instrument / "

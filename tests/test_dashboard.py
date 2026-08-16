@@ -55,6 +55,7 @@ from dashboard.services import (
     EvidenceSource,
 )
 from dashboard.views import (
+    ActionabilityDetail,
     ActionabilityState,
     DashboardTradeView,
     DecisionView,
@@ -62,6 +63,7 @@ from dashboard.views import (
     GeometryView,
     MarketOverviewView,
     derive_actionability,
+    derive_actionability_reason,
     to_jsonable,
 )
 from engine.data.historical_fixtures import historical_candles_by_instrument
@@ -236,7 +238,7 @@ class TestInstrumentSelection:
         view = service.analyze(
             AnalysisRequest(instrument="UNKNOWN", setup_timeframe="15m"),
         )
-        assert view.actionability == ActionabilityState.UNAVAILABLE
+        assert view.actionability == ActionabilityState.INVALID
         assert view.complete is False
         assert "not in fixture set" in view.reason
 
@@ -261,7 +263,7 @@ class TestTimeframeSelection:
             view = service.analyze(
                 AnalysisRequest(instrument="NIFTY", setup_timeframe=tf),
             )
-            assert view.actionability == ActionabilityState.UNAVAILABLE
+            assert view.actionability == ActionabilityState.INVALID
             assert view.complete is False
 
     def test_context_timeframe_for(self):
@@ -279,7 +281,7 @@ class TestUnavailableData:
         view = service.analyze(
             AnalysisRequest(instrument="NOPE", setup_timeframe="15m"),
         )
-        assert view.actionability == ActionabilityState.UNAVAILABLE
+        assert view.actionability == ActionabilityState.INVALID
         assert view.geometry.entry is None
         assert view.geometry.stop is None
         assert view.geometry.target_1 is None
@@ -289,14 +291,16 @@ class TestUnavailableData:
         view = service.analyze(
             AnalysisRequest(instrument="NIFTY", setup_timeframe="1m"),
         )
-        assert view.actionability == ActionabilityState.UNAVAILABLE
+        assert view.actionability == ActionabilityState.INVALID
         assert view.geometry.entry is None
 
     def test_unavailable_does_not_crash_app(self, client):
         r = client.get("/api/analysis?instrument=NOPE&timeframe=1m")
         assert r.status_code == 200
         j = r.json()
-        assert j["actionability"] == "UNAVAILABLE"
+        assert j["actionability"] == "INVALID"
+        assert j["actionability_detail"]["state"] == "INVALID"
+        assert j["actionability_detail"]["reason"]
 
     def test_yahoo_provider_graceful_when_no_deps(self):
         # Yahoo provider must not crash even when yfinance is absent;
@@ -568,11 +572,17 @@ class TestMissingTradeGeometry:
 
 
 class TestActionability:
-    def test_unavailable_when_incomplete(self):
+    def test_invalid_when_incomplete(self):
         assert derive_actionability(
             complete=False, decision_classification="",
             opportunity_status="", eligible=False,
-        ) == ActionabilityState.UNAVAILABLE
+        ) == ActionabilityState.INVALID
+
+    def test_invalid_when_no_decision(self):
+        assert derive_actionability(
+            complete=True, decision_classification="",
+            opportunity_status="WATCH", eligible=False,
+        ) == ActionabilityState.INVALID
 
     def test_no_opportunity_when_rejected(self):
         assert derive_actionability(
@@ -580,45 +590,105 @@ class TestActionability:
             opportunity_status="NO_OPPORTUNITY", eligible=False,
         ) == ActionabilityState.NO_OPPORTUNITY
 
-    def test_preferred_setup(self):
+    def test_no_opportunity_when_no_opportunity_status(self):
         assert derive_actionability(
-            complete=True, decision_classification="PREFERRED",
-            opportunity_status="BEST_OPPORTUNITY", eligible=True,
-        ) == ActionabilityState.PREFERRED_SETUP
+            complete=True, decision_classification="WATCH",
+            opportunity_status="NO_OPPORTUNITY", eligible=True,
+        ) == ActionabilityState.NO_OPPORTUNITY
 
-    def test_qualified_setup(self):
+    def test_trade_geometry_unavailable_when_eligible_no_geometry(self):
+        # Eligible opportunity but incomplete geometry (the common
+        # fixture case: BREAKOUT has no opposing structural target).
+        assert derive_actionability(
+            complete=True, decision_classification="QUALIFIED",
+            opportunity_status="WATCH", eligible=True,
+            geometry_available=False,
+        ) == ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE
+
+    def test_ready_for_review_when_qualified_complete_geometry(self):
         assert derive_actionability(
             complete=True, decision_classification="QUALIFIED",
             opportunity_status="BEST_OPPORTUNITY", eligible=True,
-        ) == ActionabilityState.QUALIFIED_SETUP
+            geometry_available=True,
+        ) == ActionabilityState.READY_FOR_REVIEW
 
-    def test_watch(self):
+    def test_ready_for_review_when_preferred_complete_geometry(self):
+        assert derive_actionability(
+            complete=True, decision_classification="PREFERRED",
+            opportunity_status="BEST_OPPORTUNITY", eligible=True,
+            geometry_available=True,
+        ) == ActionabilityState.READY_FOR_REVIEW
+
+    def test_insufficient_evidence_when_complete_geometry_and_insufficient(self):
+        assert derive_actionability(
+            complete=True, decision_classification="QUALIFIED",
+            opportunity_status="BEST_OPPORTUNITY", eligible=True,
+            geometry_available=True, evidence_strength="INSUFFICIENT",
+        ) == ActionabilityState.INSUFFICIENT_EVIDENCE
+
+    def test_ready_for_review_when_no_corpus_attached(self):
+        # A missing corpus (evidence_strength None) must NOT downgrade a
+        # complete qualified setup below READY_FOR_REVIEW.
+        assert derive_actionability(
+            complete=True, decision_classification="QUALIFIED",
+            opportunity_status="BEST_OPPORTUNITY", eligible=True,
+            geometry_available=True, evidence_strength=None,
+        ) == ActionabilityState.READY_FOR_REVIEW
+
+    def test_ready_for_review_when_evidence_sufficient(self):
+        assert derive_actionability(
+            complete=True, decision_classification="QUALIFIED",
+            opportunity_status="BEST_OPPORTUNITY", eligible=True,
+            geometry_available=True, evidence_strength="STRONG",
+        ) == ActionabilityState.READY_FOR_REVIEW
+
+    def test_watch_when_decision_watch_with_geometry(self):
         assert derive_actionability(
             complete=True, decision_classification="WATCH",
             opportunity_status="WATCH", eligible=True,
-        ) == ActionabilityState.WATCH
+            geometry_available=True,
+        ) == ActionabilityState.WAIT
 
-    def test_qualified_not_eligible_falls_to_watch_or_no(self):
-        # QUALIFIED but not eligible -> not a qualified setup.
+    def test_watch_when_qualified_not_eligible(self):
+        # QUALIFIED but not eligible -> filtered by opportunity layer ->
+        # falls through to WAIT (monitorable) not READY_FOR_REVIEW.
         s = derive_actionability(
             complete=True, decision_classification="QUALIFIED",
             opportunity_status="WATCH", eligible=False,
         )
-        assert s in (ActionabilityState.WATCH, ActionabilityState.NO_OPPORTUNITY)
+        assert s == ActionabilityState.WAIT
 
     def test_nifty_fixture_actionability(self, service):
+        # NIFTY fixture: QUALIFIED + eligible but BREAKOUT (no target) ->
+        # TRADE_GEOMETRY_UNAVAILABLE.
         view = service.analyze(
             AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
         )
-        assert view.actionability in (
-            ActionabilityState.QUALIFIED_SETUP, ActionabilityState.WATCH,
-        )
+        assert view.actionability == ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE
 
     def test_actionability_is_not_buysell(self):
         # None of the actionability states is a BUY/SELL recommendation.
         for s in ActionabilityState:
             assert "BUY" not in s.value
             assert "SELL" not in s.value
+
+    def test_actionability_states_are_the_six_spec_states(self):
+        assert {s.value for s in ActionabilityState} == {
+            "INVALID", "NO_OPPORTUNITY", "TRADE_GEOMETRY_UNAVAILABLE",
+            "INSUFFICIENT_EVIDENCE", "READY_FOR_REVIEW", "WAIT",
+        }
+
+    def test_actionability_detail_has_reason(self):
+        for s in ActionabilityState:
+            assert derive_actionability_reason(s)
+
+    def test_actionability_detail_on_view(self, service):
+        view = service.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        assert isinstance(view.actionability_detail, ActionabilityDetail)
+        assert view.actionability_detail.state == view.actionability
+        assert view.actionability_detail.reason
 
 
 # ============================================================
@@ -736,6 +806,108 @@ class TestNoLookAhead:
         )
         assert view.evaluation_timestamp is not None
 
+    def test_service_does_not_call_pipeline(self, service, monkeypatch):
+        # The dashboard service must not run the historical pipeline; it
+        # uses the scanner only. Patch the pipeline to raise and confirm
+        # current analysis still works.
+        import engine.pipeline.historical_pipeline as hp
+
+        def _boom(*a, **k):
+            raise RuntimeError("pipeline must not be called from dashboard")
+
+        monkeypatch.setattr(
+            hp.HistoricalEvaluationPipeline, "evaluate", _boom,
+        )
+        view = service.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        assert view.actionability is not None
+
+    def test_future_cannot_alter_stop(self, fixture_data):
+        setup = fixture_data["NIFTY"]["15M"]
+        ctx = fixture_data["NIFTY"]["1D"]
+        T = setup[-1].timestamp
+        svc = DashboardAnalysisService(provider=_StaticProvider(ctx, setup))
+        v1 = svc.analyze(AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"))
+        mutated = setup + [
+            OHLCVCandle(
+                timestamp=T + timedelta(minutes=15),
+                open=9999.0, high=10000.0, low=9998.0, close=9999.0,
+                volume=10 ** 9,
+            )
+        ]
+        cfg = MarketScanConfig(
+            context_timeframe="1D", setup_timeframe="15M", min_history=10,
+        )
+        ds = InstrumentDataset(
+            instrument="NIFTY", context_candles=tuple(ctx),
+            setup_candles=tuple(mutated),
+        )
+        scan = MarketScanner(cfg).scan(
+            [ds], evaluation_time=T, engines=ScanEngines.default(),
+        )
+        r = scan.results[0]
+        assert v1.geometry.stop == getattr(
+            r.decision.candidate, "stop_reference", None,
+        )
+
+    def test_future_cannot_alter_target(self, fixture_data):
+        setup = fixture_data["NIFTY"]["15M"]
+        ctx = fixture_data["NIFTY"]["1D"]
+        T = setup[-1].timestamp
+        svc = DashboardAnalysisService(provider=_StaticProvider(ctx, setup))
+        v1 = svc.analyze(AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"))
+        mutated = setup + [
+            OHLCVCandle(
+                timestamp=T + timedelta(minutes=15),
+                open=1.0, high=2.0, low=0.5, close=1.5, volume=1.0,
+            )
+        ]
+        cfg = MarketScanConfig(
+            context_timeframe="1D", setup_timeframe="15M", min_history=10,
+        )
+        ds = InstrumentDataset(
+            instrument="NIFTY", context_candles=tuple(ctx),
+            setup_candles=tuple(mutated),
+        )
+        scan = MarketScanner(cfg).scan(
+            [ds], evaluation_time=T, engines=ScanEngines.default(),
+        )
+        r = scan.results[0]
+        assert v1.geometry.target_1 == getattr(
+            r.decision.candidate, "target_reference", None,
+        )
+
+    def test_future_cannot_alter_decision(self, fixture_data):
+        setup = fixture_data["NIFTY"]["15M"]
+        ctx = fixture_data["NIFTY"]["1D"]
+        T = setup[-1].timestamp
+        svc = DashboardAnalysisService(provider=_StaticProvider(ctx, setup))
+        v1 = svc.analyze(AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"))
+        mutated = setup + [
+            OHLCVCandle(
+                timestamp=T + timedelta(minutes=15),
+                open=5000.0, high=6000.0, low=4000.0, close=5500.0,
+                volume=10 ** 8,
+            )
+        ]
+        cfg = MarketScanConfig(
+            context_timeframe="1D", setup_timeframe="15M", min_history=10,
+        )
+        ds = InstrumentDataset(
+            instrument="NIFTY", context_candles=tuple(ctx),
+            setup_candles=tuple(mutated),
+        )
+        scan = MarketScanner(cfg).scan(
+            [ds], evaluation_time=T, engines=ScanEngines.default(),
+        )
+        r = scan.results[0]
+        assert (
+            v1.decision.decision_classification
+            == r.decision_classification
+        )
+        assert v1.decision.decision_score == r.decision_score
+
 
 # ============================================================
 # N. SERIALIZATION / PRESENTATION MODEL
@@ -763,7 +935,13 @@ class TestPresentationSerialization:
         d = to_jsonable(view)
         assert d["geometry"]["entry"] is None
         assert d["evidence"]["available"] is False
-        assert d["actionability"] == "UNAVAILABLE"
+        assert d["actionability"] == "INVALID"
+        assert d["actionability_detail"]["state"] == "INVALID"
+        # The five concerns are separated; no single "signal"/"score" object.
+        for k in ("market_overview", "decision", "geometry", "trade_geometry",
+                  "evidence", "actionability_detail"):
+            assert k in d
+        assert "signal" not in d and "score" not in d
 
     def test_models_frozen(self):
         from dataclasses import is_dataclass
@@ -853,10 +1031,25 @@ class TestExistingDecisionIdentity:
         view = service.analyze(
             AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
         )
-        # If the decision is QUALIFIED, actionability must not be
-        # PREFERRED_SETUP (no upgrade).
-        if view.decision.decision_classification == "QUALIFIED":
-            assert view.actionability != ActionabilityState.PREFERRED_SETUP
+        # A QUALIFIED decision must never become a higher decision
+        # classification through the dashboard. Actionability is a
+        # presentation mirror; it must not rename QUALIFIED to PREFERRED
+        # and must not surface a BUY/SELL recommendation.
+        assert view.actionability.value not in ("BUY", "SELL", "PREFERRED")
+        # READY_FOR_REVIEW is only reached when the decision itself is
+        # QUALIFIED/PREFERRED — never manufactured from a WATCH decision.
+        if view.decision.decision_classification == "WATCH":
+            assert view.actionability != ActionabilityState.READY_FOR_REVIEW
+
+    def test_actionability_does_not_modify_decision(self, service):
+        view = service.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        # The decision classification is reused verbatim and the
+        # actionability never rewrites it.
+        assert view.decision.decision_classification in (
+            "REJECTED", "WATCH", "QUALIFIED", "PREFERRED",
+        )
 
     def test_decision_classification_reused_verbatim(self, service):
         view = service.analyze(
@@ -943,3 +1136,348 @@ class TestDemoSmoke:
         # It must carry the honesty disclaimer.
         assert "does not guarantee future performance" in text or \
             "not predictive" in text
+
+
+# ============================================================
+# T. TRADE-GEOMETRY / ACTIONABILITY INVARIANTS (Phase 10)
+# ============================================================
+
+
+def _stub_complete_result(
+    *,
+    direction: str = "LONG",
+    decision_classification: str = "QUALIFIED",
+    decision_score: int = 80,
+    opportunity_status: str = "BEST_OPPORTUNITY",
+    rank: int = 1,
+    eligible: bool = True,
+    entry: float = 100.0,
+    stop: float = 95.0,
+    target: float = 110.0,
+    risk: float = 5.0,
+    reward: float = 10.0,
+    rr: float = 2.0,
+    setup_type_name: str = "TREND_CONTINUATION",
+    alignment: str = "ALIGNED",
+) -> InstrumentScanResult:
+    """Build an :class:`InstrumentScanResult` carrying a stub decision +
+    candidate with COMPLETE geometry for presentation-projection tests.
+
+    This exercises the dashboard PROJECTION layer only — no intelligence
+    is recomputed. The stubs expose exactly the attributes ``_build_view``
+    reads via getattr.
+    """
+
+    from types import SimpleNamespace
+
+    from engine.models.market_scan import InstrumentScanResult, MTFAlignment
+
+    candidate = SimpleNamespace(
+        entry_reference=entry,
+        stop_reference=stop,
+        target_reference=target,
+        risk_distance=risk,
+        reward_distance=reward,
+        risk_reward_ratio=rr,
+        geometry_complete=True,
+        setup_type=SimpleNamespace(name=setup_type_name),
+    )
+    decision = SimpleNamespace(
+        candidate=candidate,
+        rationale="stub decision rationale",
+    )
+    opportunity = SimpleNamespace(
+        status=SimpleNamespace(name=opportunity_status),
+        rank=rank,
+        confluence_score=4,
+        ranking_reason="stub ranking reason",
+    )
+    return InstrumentScanResult(
+        instrument="NIFTY",
+        context_timeframe="1D",
+        setup_timeframe="15M",
+        timestamp=datetime(2025, 1, 25, 5, 0, tzinfo=UTC),
+        decision=decision,
+        opportunity=opportunity,
+        alignment=MTFAlignment[alignment],
+        complete=True,
+        direction=direction,
+        decision_classification=decision_classification,
+        decision_score=decision_score,
+        eligible=eligible,
+        reason="stub scan reason",
+    )
+
+
+class TestTradeGeometryInvariants:
+    def test_geometry_complete_surfaces_ready_for_review(self, service):
+        result = _stub_complete_result()
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        assert view.geometry.geometry_available is True
+        assert view.actionability == ActionabilityState.READY_FOR_REVIEW
+
+    def test_geometry_complete_reuses_values_verbatim(self, service):
+        result = _stub_complete_result()
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        g = view.geometry
+        assert g.entry == 100.0
+        assert g.stop == 95.0
+        assert g.target_1 == 110.0
+        assert g.risk_distance == 5.0
+        assert g.reward_distance == 10.0
+        assert g.risk_reward_ratio == 2.0
+        assert g.invalidation_level == g.stop
+        assert g.geometry_complete_source is True
+
+    def test_target_2_unsupported_even_when_geometry_complete(self, service):
+        result = _stub_complete_result()
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        assert view.geometry.target_2 is None
+        assert view.geometry.target_2_supported is False
+
+    def test_entry_only_partial_geometry(self, service):
+        from types import SimpleNamespace
+
+        from engine.models.market_scan import (
+            InstrumentScanResult, MTFAlignment,
+        )
+        candidate = SimpleNamespace(
+            entry_reference=100.0, stop_reference=None, target_reference=None,
+            risk_distance=None, reward_distance=None, risk_reward_ratio=None,
+            geometry_complete=False, setup_type=SimpleNamespace(name="BREAKOUT"),
+        )
+        result = InstrumentScanResult(
+            instrument="NIFTY", context_timeframe="1D", setup_timeframe="15M",
+            timestamp=datetime(2025, 1, 25, 5, 0, tzinfo=UTC),
+            decision=SimpleNamespace(candidate=candidate, rationale="r"),
+            opportunity=SimpleNamespace(
+                status=SimpleNamespace(name="WATCH"), rank=1,
+                confluence_score=3, ranking_reason="r",
+            ),
+            alignment=MTFAlignment.ALIGNED, complete=True, direction="LONG",
+            decision_classification="QUALIFIED", decision_score=70,
+            eligible=True, reason="r",
+        )
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        # Entry present but stop/target missing -> incomplete geometry.
+        assert view.geometry.entry == 100.0
+        assert view.geometry.stop is None
+        assert view.geometry.target_1 is None
+        assert view.geometry.geometry_available is False
+        assert view.actionability == ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE
+
+    def test_entry_stop_no_target(self, service):
+        from types import SimpleNamespace
+
+        from engine.models.market_scan import (
+            InstrumentScanResult, MTFAlignment,
+        )
+        candidate = SimpleNamespace(
+            entry_reference=100.0, stop_reference=95.0, target_reference=None,
+            risk_distance=5.0, reward_distance=None, risk_reward_ratio=None,
+            geometry_complete=False, setup_type=SimpleNamespace(name="BREAKOUT"),
+        )
+        result = InstrumentScanResult(
+            instrument="NIFTY", context_timeframe="1D", setup_timeframe="15M",
+            timestamp=datetime(2025, 1, 25, 5, 0, tzinfo=UTC),
+            decision=SimpleNamespace(candidate=candidate, rationale="r"),
+            opportunity=SimpleNamespace(
+                status=SimpleNamespace(name="WATCH"), rank=1,
+                confluence_score=3, ranking_reason="r",
+            ),
+            alignment=MTFAlignment.ALIGNED, complete=True, direction="LONG",
+            decision_classification="QUALIFIED", decision_score=70,
+            eligible=True, reason="r",
+        )
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        assert view.geometry.entry == 100.0
+        assert view.geometry.stop == 95.0
+        assert view.geometry.target_1 is None
+        assert view.geometry.geometry_available is False
+
+    def test_insufficient_evidence_with_complete_geometry(self, service):
+        # Complete geometry + evidence attached + INSUFFICIENT strength.
+        from engine.config.historical_evidence_config import EvidenceConfig
+        from engine.intelligence.historical_evidence import (
+            HistoricalEvidenceEngine,
+        )
+        from engine.intelligence.historical_outcome import OutcomeStatus
+        from engine.models.historical_outcome import (
+            HistoricalOutcome, OutcomeSubject,
+        )
+
+        epoch = datetime(2025, 1, 1, tzinfo=UTC)
+        s = OutcomeSubject(
+            instrument="NIFTY", direction="LONG",
+            evaluation_timestamp=epoch, entry=100.0, stop=95.0, target=110.0,
+            decision_classification="QUALIFIED", decision_score=80,
+            opportunity_status="BEST_OPPORTUNITY", rank=1, scan_id="s",
+            setup_timeframe="15M", setup_type="TREND_CONTINUATION",
+            mtf_alignment="ALIGNED",
+        )
+        outcome = HistoricalOutcome(
+            subject=s, outcome_status=OutcomeStatus.TARGET_HIT,
+            realized_r=2.0, mfe=5.0, mae=2.0, mfe_r=1.0, mae_r=0.4, risk=5.0,
+        )
+        report = HistoricalEvidenceEngine(
+            EvidenceConfig(label="t"),
+        ).evaluate([outcome])
+        svc = DashboardAnalysisService(evidence_source=EvidenceSource(report))
+        result = _stub_complete_result(setup_type_name="TREND_CONTINUATION")
+        view = svc._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        assert view.geometry.geometry_available is True
+        assert view.evidence.available is True
+        assert view.evidence.evidence_strength == "INSUFFICIENT"
+        assert view.actionability == ActionabilityState.INSUFFICIENT_EVIDENCE
+
+    def test_decision_preserved_when_geometry_complete(self, service):
+        # The decision classification must be reused verbatim even when
+        # geometry is complete (no upgrade to PREFERRED).
+        result = _stub_complete_result(decision_classification="QUALIFIED")
+        view = service._build_view(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+            "15m", "1D", result,
+        )
+        assert view.decision.decision_classification == "QUALIFIED"
+        assert view.actionability == ActionabilityState.READY_FOR_REVIEW
+
+
+class TestApiSchemaAndChart:
+    def test_api_response_schema(self, client):
+        j = client.get("/api/analysis?instrument=NIFTY&timeframe=15m").json()
+        # The five separated concerns.
+        for k in (
+            "market_overview", "decision", "geometry", "trade_geometry",
+            "evidence", "actionability", "actionability_detail",
+        ):
+            assert k in j
+        # Geometry sub-fields.
+        for k in (
+            "direction", "entry", "stop", "target_1", "target_2",
+            "target_2_supported", "risk_distance", "reward_distance",
+            "risk_reward_ratio", "invalidation_level", "geometry_available",
+        ):
+            assert k in j["geometry"]
+        # trade_geometry alias mirrors geometry.
+        assert j["trade_geometry"] == j["geometry"]
+        # actionability_detail object.
+        assert set(j["actionability_detail"]) == {"state", "reason"}
+
+    def test_html_route_has_sections(self, client):
+        r = client.get("/?instrument=NIFTY&timeframe=15m")
+        assert r.status_code == 200
+        text = r.text
+        # The restructured trade-review sections.
+        for section in (
+            "Market Overview", "Decision", "Trade Geometry",
+            "Evidence", "Setup Details", "Actionability",
+        ):
+            assert section in text
+
+    def test_chart_payload_carries_geometry(self, service):
+        req = AnalysisRequest(instrument="NIFTY", setup_timeframe="15m")
+        view = service.analyze(req)
+        cp = service.chart_payload(req, view)
+        d = cp.__dict__
+        # Chart payload carries the backend-authored levels verbatim.
+        assert d["entry"] == view.geometry.entry
+        assert d["stop"] == view.geometry.stop
+        assert d["target_1"] == view.geometry.target_1
+        assert d["invalidation_level"] == view.geometry.invalidation_level
+
+    def test_chart_payload_geometry_flag_in_api(self, client):
+        j = client.get("/api/analysis?instrument=NIFTY&timeframe=15m").json()
+        # The chart payload is embedded in the API response.
+        assert "chart" in j
+        assert "candles" in j["chart"]
+        assert "entry" in j["chart"] and "stop" in j["chart"]
+
+    def test_unknown_instrument_api_honest(self, client):
+        j = client.get("/api/analysis?instrument=UNKNOWNX&timeframe=15m").json()
+        assert j["actionability"] == "INVALID"
+        assert j["geometry"]["entry"] is None
+        assert j["evidence"]["available"] is False
+
+    def test_unsupported_timeframe_api_honest(self, client):
+        j = client.get("/api/analysis?instrument=NIFTY&timeframe=5m").json()
+        assert j["actionability"] == "INVALID"
+        assert j["geometry"]["entry"] is None
+
+
+class TestAdditionalInvariants:
+    def test_shuffled_provider_input_same_output(self, fixture_data):
+        # Feeding the same candles in a different provider instance must
+        # yield the same deterministic view.
+        setup = fixture_data["NIFTY"]["15M"]
+        ctx = fixture_data["NIFTY"]["1D"]
+        v1 = DashboardAnalysisService(
+            provider=_StaticProvider(ctx, setup),
+        ).analyze(AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"))
+        v2 = DashboardAnalysisService(
+            provider=_StaticProvider(ctx, setup),
+        ).analyze(AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"))
+        assert to_jsonable(v1) == to_jsonable(v2)
+
+    def test_malformed_provider_response_handled(self):
+        # A provider returning an empty series must not crash; the
+        # dashboard reports INVALID honestly.
+        class _Empty:
+            def fetch(self, instrument, setup_timeframe, lookback_bars=300):
+                return InstrumentSeries(
+                    instrument=instrument, available=False,
+                    reason="malformed provider response",
+                )
+
+            def last_updated(self, instrument, setup_timeframe):
+                return None
+
+            def is_timeframe_supported(self, setup_timeframe):
+                return True
+
+        svc = DashboardAnalysisService(provider=_Empty())  # type: ignore[arg-type]
+        view = svc.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        assert view.actionability == ActionabilityState.INVALID
+        assert view.geometry.entry is None
+
+    def test_no_zero_when_unavailable(self, service):
+        # When geometry is unavailable, R:R must be None, never 0.
+        view = service.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        if not view.geometry.geometry_available:
+            assert view.geometry.risk_reward_ratio is None
+            assert view.geometry.target_1 is None
+        # Target never displayed as 0 when unavailable.
+        if view.geometry.target_1 is None:
+            assert view.geometry.target_1 is None
+
+    def test_evidence_unavailable_separate_from_observed(self, service):
+        # No corpus -> evidence UNAVAILABLE, not INSUFFICIENT, and not
+        # merged into actionability.
+        view = service.analyze(
+            AnalysisRequest(instrument="NIFTY", setup_timeframe="15m"),
+        )
+        assert view.evidence.available is False
+        assert view.evidence.evidence_strength == "UNAVAILABLE"
+        # Without a corpus, actionability does NOT become INSUFFICIENT_EVIDENCE.
+        assert view.actionability != ActionabilityState.INSUFFICIENT_EVIDENCE

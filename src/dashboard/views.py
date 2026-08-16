@@ -53,53 +53,101 @@ from typing import Any
 
 class ActionabilityState(Enum):
     """
-    Presentation-level actionability state.
+    Presentation-level actionability / review state for the trade-review
+    interface.
 
-    This is a DETERMINISTIC MIRROR of the existing decision / opportunity
-    outputs. It is NOT a new predictive score, NOT a probability, NOT a
-    confidence percentage, and NOT a BUY/SELL recommendation. The mapping
-    is documented in :func:`derive_actionability`.
+    This is a DETERMINISTIC MIRROR of the AUTHORITATIVE existing outputs
+    (scan completeness + Sprint 11S decision classification + Sprint 11T
+    opportunity status + Sprint 11R geometry completeness + Sprint 11Y
+    evidence strength). It is NOT a new predictive score, NOT a
+    probability, NOT a confidence percentage, and NOT a BUY/SELL/ENTER/
+    EXIT/HOLD recommendation. The mapping is documented in
+    :func:`derive_actionability` and never introduces information not
+    present in the existing outputs.
 
-    UNAVAILABLE
-        The scan was INCOMPLETE (missing timeframe / context data) or no
-        decision / opportunity could be produced. Nothing actionable can
-        be shown; no value is fabricated.
+    The states answer one question for the trader: *is this something
+    worth reviewing right now, and if not, why?*
+
+    INVALID
+        The scan was INCOMPLETE (missing timeframe / context data), no
+        instrument / timeframe data was available, or no decision /
+        opportunity could be produced. Nothing actionable can be shown;
+        no value is fabricated. (Replaces the earlier ``UNAVAILABLE``.)
 
     NO_OPPORTUNITY
         The existing engine produced no opportunity (opportunity status
         ``NO_OPPORTUNITY``) or the decision was ``REJECTED``. There is
         no trade setup to monitor.
 
-    WATCH
-        The existing decision is ``WATCH`` and/or the opportunity status
-        is ``WATCH``. A monitorable technical setup exists but it is not
-        strong / clean enough to be a qualified or preferred setup.
+    TRADE_GEOMETRY_UNAVAILABLE
+        A decision / opportunity exists and is eligible, but the Sprint
+        11R trade candidate did not produce complete geometry
+        (entry / stop / target). The setup cannot be reviewed as a
+        concrete trade because the structural references are not all
+        available — none is fabricated to make the panel look complete.
 
-    QUALIFIED_SETUP
-        The existing decision is ``QUALIFIED`` and the opportunity is
-        eligible / surfaced. A coherent technical setup exists. This is
-        DESCRIPTIVE and does NOT predict success.
+    INSUFFICIENT_EVIDENCE
+        Complete geometry exists AND an offline historical evidence
+        corpus is attached AND the matched cohort's Sprint 11Y evidence
+        strength is ``INSUFFICIENT`` (sample below the configured
+        minimum). The setup is technically complete but the historical
+        evidence for this kind of setup is too thin to be reliable.
+        Note: a MISSING corpus (evidence UNAVAILABLE) is NOT the same as
+        INSUFFICIENT evidence — missing evidence is surfaced as a
+        warning but does not downgrade a complete setup below
+        ``READY_FOR_REVIEW``.
 
-    PREFERRED_SETUP
-        The existing decision is ``PREFERRED`` (typically the best
-        eligible opportunity). The strongest available technical setup.
-        DESCRIPTIVE only — never a guarantee or a trading recommendation.
+    READY_FOR_REVIEW
+        A qualified / preferred decision with an ELIGIBLE opportunity
+        AND complete trade geometry AND evidence that is not
+        ``INSUFFICIENT`` (sufficient, or no corpus attached). This is
+        the "worth reviewing" state. It is DESCRIPTIVE ONLY — it does
+        NOT predict success, profitability, or a winning trade.
+
+    WAIT
+        A monitorable technical setup exists (decision ``WATCH`` /
+        opportunity ``WATCH`` / eligible but not qualified-or-above)
+        that does not yet meet the ``READY_FOR_REVIEW`` bar. Watch, do
+        not review as a concrete trade yet.
     """
 
-    UNAVAILABLE = "UNAVAILABLE"
+    INVALID = "INVALID"
     NO_OPPORTUNITY = "NO_OPPORTUNITY"
-    WATCH = "WATCH"
-    QUALIFIED_SETUP = "QUALIFIED_SETUP"
-    PREFERRED_SETUP = "PREFERRED_SETUP"
+    TRADE_GEOMETRY_UNAVAILABLE = "TRADE_GEOMETRY_UNAVAILABLE"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
+    WAIT = "WAIT"
 
     @property
     def is_actionable(self) -> bool:
-        """Whether the state represents a qualified/preferred setup."""
+        """Whether the state represents a complete, reviewable setup."""
+
+        return self is ActionabilityState.READY_FOR_REVIEW
+
+    @property
+    def is_reviewable(self) -> bool:
+        """Whether the state represents anything worth a trader's attention."""
 
         return self in (
-            ActionabilityState.QUALIFIED_SETUP,
-            ActionabilityState.PREFERRED_SETUP,
+            ActionabilityState.READY_FOR_REVIEW,
+            ActionabilityState.WAIT,
+            ActionabilityState.INSUFFICIENT_EVIDENCE,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ActionabilityDetail:
+    """
+    The presentation actionability state paired with a human-readable
+    DERIVED reason explaining how the state was reached.
+
+    The reason is DESCRIPTIVE presentation text generated by
+    :func:`derive_actionability` from the existing outputs only. It is
+    NOT a trading recommendation and NOT a new intelligence value.
+    """
+
+    state: ActionabilityState = ActionabilityState.INVALID
+    reason: str = ""
 
 
 def derive_actionability(
@@ -108,6 +156,8 @@ def derive_actionability(
     decision_classification: str,
     opportunity_status: str,
     eligible: bool,
+    geometry_available: bool = False,
+    evidence_strength: str | None = None,
 ) -> ActionabilityState:
     """
     Derive the presentation :class:`ActionabilityState` from the
@@ -116,40 +166,64 @@ def derive_actionability(
     The mapping is deterministic and documented. It NEVER re-scores and
     NEVER introduces information not present in the existing outputs.
 
-    Mapping (priority order):
+    Inputs:
 
-    1. Scan not complete, or no decision/opportunity produced
-       -> ``UNAVAILABLE``.
+    * ``complete`` — Sprint 11U scan completeness (reused).
+    * ``decision_classification`` — Sprint 11S classification name
+      (``REJECTED`` / ``WATCH`` / ``QUALIFIED`` / ``PREFERRED``).
+    * ``opportunity_status`` — Sprint 11T opportunity status name.
+    * ``eligible`` — Sprint 11T eligibility flag (reused).
+    * ``geometry_available`` — Sprint 11R ``TradeCandidate.geometry_complete``
+      (reused verbatim; ``False`` when no candidate / incomplete geometry).
+    * ``evidence_strength`` — Sprint 11Y ``EvidenceStrength`` name when an
+      offline evidence corpus is attached, else ``None`` (no corpus).
+
+    Mapping (priority order — first match wins):
+
+    1. Scan not complete, or no decision / no opportunity produced
+       -> ``INVALID``.
     2. Opportunity status ``NO_OPPORTUNITY`` OR decision ``REJECTED``
        -> ``NO_OPPORTUNITY``.
-    3. Decision ``PREFERRED`` (and eligible / surfaced)
-       -> ``PREFERRED_SETUP``.
-    4. Decision ``QUALIFIED`` (and eligible / surfaced)
-       -> ``QUALIFIED_SETUP``.
-    5. Otherwise (decision ``WATCH`` / opportunity ``WATCH`` / eligible
-       but not qualified-or-above) -> ``WATCH``.
+    3. Eligible opportunity but geometry NOT complete
+       -> ``TRADE_GEOMETRY_UNAVAILABLE`` (cannot review a concrete trade
+       without entry / stop / target; nothing fabricated).
+    4. Eligible opportunity WITH complete geometry:
+       a. Evidence attached AND strength == ``INSUFFICIENT``
+          -> ``INSUFFICIENT_EVIDENCE``.
+       b. Decision ``PREFERRED`` or ``QUALIFIED`` -> ``READY_FOR_REVIEW``.
+       c. Decision ``WATCH`` (complete geometry, rare) -> ``WAIT``.
+    5. Otherwise monitorable (``WATCH`` decision / ``WATCH`` opportunity /
+       eligible-but-below-bar) -> ``WAIT``.
+    6. Else -> ``NO_OPPORTUNITY``.
 
-    When the decision / opportunity are present but not eligible, the
-    state falls through to ``NO_OPPORTUNITY`` (filtered out by the
-    existing opportunity layer) — never manufactured as actionable.
+    A missing evidence corpus (``evidence_strength is None``) does NOT
+    downgrade a complete setup — it is surfaced as a separate warning by
+    the service, not as an actionability downgrade.
     """
 
     dc = (decision_classification or "").upper()
     os_ = (opportunity_status or "").upper()
+    ev = (evidence_strength or "").upper() or None
 
     # 1. Incomplete / nothing produced.
     if not complete or not dc or not os_:
-        return ActionabilityState.UNAVAILABLE
+        return ActionabilityState.INVALID
 
     # 2. Filtered out by the existing opportunity layer or rejected.
     if os_ == "NO_OPPORTUNITY" or dc == "REJECTED":
         return ActionabilityState.NO_OPPORTUNITY
 
-    # 3/4. Qualified-or-above require an eligible / surfaced opportunity.
-    if dc == "PREFERRED" and eligible:
-        return ActionabilityState.PREFERRED_SETUP
-    if dc == "QUALIFIED" and eligible:
-        return ActionabilityState.QUALIFIED_SETUP
+    # 3. Eligible but geometry incomplete -> cannot review a concrete trade.
+    if eligible and not geometry_available:
+        return ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE
+
+    # 4. Eligible WITH complete geometry.
+    if eligible and geometry_available:
+        if ev == "INSUFFICIENT":
+            return ActionabilityState.INSUFFICIENT_EVIDENCE
+        if dc in ("PREFERRED", "QUALIFIED"):
+            return ActionabilityState.READY_FOR_REVIEW
+        return ActionabilityState.WAIT
 
     # 5. Otherwise monitorable.
     if dc in ("WATCH", "QUALIFIED", "PREFERRED") or os_ in (
@@ -157,9 +231,55 @@ def derive_actionability(
         "ALTERNATIVE_OPPORTUNITY",
         "BEST_OPPORTUNITY",
     ):
-        return ActionabilityState.WATCH
+        return ActionabilityState.WAIT
 
+    # 6. Nothing to surface.
     return ActionabilityState.NO_OPPORTUNITY
+
+
+def derive_actionability_reason(state: ActionabilityState) -> str:
+    """
+    Produce the documented, descriptive DERIVED reason for an
+    :class:`ActionabilityState`.
+
+    The reason is presentation text only — it explains how the state was
+    reached and never adds a trading recommendation.
+    """
+
+    reasons = {
+        ActionabilityState.INVALID: (
+            "Analysis is incomplete or no decision / opportunity was "
+            "produced for this instrument / timeframe. No directional "
+            "conclusion, geometry or evidence is fabricated."
+        ),
+        ActionabilityState.NO_OPPORTUNITY: (
+            "The existing engine produced no opportunity or the decision "
+            "was REJECTED. There is no trade setup to monitor."
+        ),
+        ActionabilityState.TRADE_GEOMETRY_UNAVAILABLE: (
+            "An eligible opportunity exists but the trade candidate did not "
+            "produce complete geometry (entry / stop / target). The setup "
+            "cannot be reviewed as a concrete trade; no level is fabricated."
+        ),
+        ActionabilityState.INSUFFICIENT_EVIDENCE: (
+            "Complete trade geometry exists but the matched historical "
+            "evidence cohort is INSUFFICIENT (sample below the configured "
+            "minimum). The setup is technically complete but the historical "
+            "evidence is too thin to be reliable. Descriptive only."
+        ),
+        ActionabilityState.READY_FOR_REVIEW: (
+            "A qualified / preferred decision with an eligible opportunity "
+            "and complete trade geometry. Worth reviewing. Descriptive "
+            "only — does NOT predict success, profitability, or a winning "
+            "trade."
+        ),
+        ActionabilityState.WAIT: (
+            "A monitorable technical setup exists but it does not yet meet "
+            "the complete-geometry + qualified-or-above bar for review. "
+            "Watch; do not review as a concrete trade yet."
+        ),
+    }
+    return reasons.get(state, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,12 +527,12 @@ class DecisionView:
 class DashboardTradeView:
     """
     The single coherent presentation artifact for one instrument at one
-    evaluation point.
+    evaluation point — the trade-review view.
 
-    This model SURFACES existing engine outputs and adds exactly ONE
-    derived presentation field (``actionability``). It is NOT a new
-    intelligence layer. Every field documents whether it is OBSERVED
-    (reused) or DERIVED (presentation).
+    This model SURFACES existing engine outputs and adds DERIVED
+    presentation fields (``actionability`` + ``actionability_detail``).
+    It is NOT a new intelligence layer. Every field documents whether it
+    is OBSERVED (reused) or DERIVED (presentation).
 
     Attributes:
 
@@ -450,7 +570,12 @@ class DashboardTradeView:
 
     actionability
         DERIVED presentation :class:`ActionabilityState` (documented
-        deterministic mirror of the existing decision/opportunity).
+        deterministic mirror of the existing decision/opportunity +
+        geometry completeness + evidence strength).
+
+    actionability_detail
+        DERIVED :class:`ActionabilityDetail` (the state + a descriptive
+        reason explaining how it was reached). Presentation only.
 
     reason
         Reused descriptive reason from the scan result, or ``""``.
@@ -473,13 +598,16 @@ class DashboardTradeView:
     geometry: GeometryView = field(default_factory=GeometryView)
     evidence: EvidenceView = field(default_factory=EvidenceView)
     setup_type: str = ""
-    actionability: ActionabilityState = ActionabilityState.UNAVAILABLE
+    actionability: ActionabilityState = ActionabilityState.INVALID
+    actionability_detail: ActionabilityDetail = field(
+        default_factory=ActionabilityDetail,
+    )
     reason: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def has_actionable_geometry(self) -> bool:
-        """Whether a qualified/preferred setup WITH geometry exists."""
+        """Whether a reviewable setup WITH complete geometry exists."""
 
         return (
             self.actionability.is_actionable
@@ -497,11 +625,45 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
     for the API endpoint and the chart payload.
 
     Deterministic and presentation-only. No engine value is mutated.
+
+    The response separates the five concerns the trade-review interface
+    needs — ``market_overview``, ``decision``, ``geometry`` (also aliased
+    as ``trade_geometry``), ``evidence`` and ``actionability`` — and never
+    collapses them into a single ``signal`` / ``score`` object. The bare
+    ``actionability`` string is kept for backward compatibility; the
+    ``actionability_detail`` object carries the state + the descriptive
+    DERIVED reason.
     """
 
     mo = view.market_overview
     ts = mo.latest_candle_timestamp
     eval_ts = view.evaluation_timestamp
+    geometry = {
+        "direction": view.geometry.direction,
+        "entry": view.geometry.entry,
+        "stop": view.geometry.stop,
+        "target_1": view.geometry.target_1,
+        "target_2": view.geometry.target_2,
+        "target_2_supported": view.geometry.target_2_supported,
+        "risk_distance": view.geometry.risk_distance,
+        "reward_distance": view.geometry.reward_distance,
+        "risk_reward_ratio": view.geometry.risk_reward_ratio,
+        "invalidation_level": view.geometry.invalidation_level,
+        "geometry_available": view.geometry.geometry_available,
+        "entry_fmt": _fmt_optional(view.geometry.entry),
+        "stop_fmt": _fmt_optional(view.geometry.stop),
+        "target_1_fmt": _fmt_optional(view.geometry.target_1),
+        "risk_distance_fmt": _fmt_optional(view.geometry.risk_distance),
+        "reward_distance_fmt": _fmt_optional(
+            view.geometry.reward_distance,
+        ),
+        "risk_reward_ratio_fmt": _fmt_optional(
+            view.geometry.risk_reward_ratio,
+        ),
+        "invalidation_level_fmt": _fmt_optional(
+            view.geometry.invalidation_level,
+        ),
+    }
     return {
         "instrument": view.instrument,
         "context_timeframe": view.context_timeframe,
@@ -511,6 +673,10 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
         "complete": view.complete,
         "setup_type": view.setup_type,
         "actionability": view.actionability.value,
+        "actionability_detail": {
+            "state": view.actionability_detail.state.value,
+            "reason": view.actionability_detail.reason,
+        },
         "reason": view.reason,
         "warnings": list(view.warnings),
         "market_overview": {
@@ -536,32 +702,10 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
             "confluence_score": view.decision.confluence_score,
             "rationale": view.decision.rationale,
         },
-        "geometry": {
-            "direction": view.geometry.direction,
-            "entry": view.geometry.entry,
-            "stop": view.geometry.stop,
-            "target_1": view.geometry.target_1,
-            "target_2": view.geometry.target_2,
-            "target_2_supported": view.geometry.target_2_supported,
-            "risk_distance": view.geometry.risk_distance,
-            "reward_distance": view.geometry.reward_distance,
-            "risk_reward_ratio": view.geometry.risk_reward_ratio,
-            "invalidation_level": view.geometry.invalidation_level,
-            "geometry_available": view.geometry.geometry_available,
-            "entry_fmt": _fmt_optional(view.geometry.entry),
-            "stop_fmt": _fmt_optional(view.geometry.stop),
-            "target_1_fmt": _fmt_optional(view.geometry.target_1),
-            "risk_distance_fmt": _fmt_optional(view.geometry.risk_distance),
-            "reward_distance_fmt": _fmt_optional(
-                view.geometry.reward_distance,
-            ),
-            "risk_reward_ratio_fmt": _fmt_optional(
-                view.geometry.risk_reward_ratio,
-            ),
-            "invalidation_level_fmt": _fmt_optional(
-                view.geometry.invalidation_level,
-            ),
-        },
+        "geometry": geometry,
+        # Alias so a trade-review consumer can read the trade geometry
+        # under a domain-named key. Identical content, by reference.
+        "trade_geometry": geometry,
         "evidence": {
             "available": view.evidence.available,
             "evidence_strength": view.evidence.evidence_strength,
@@ -577,6 +721,7 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
 
 
 __all__ = [
+    "ActionabilityDetail",
     "ActionabilityState",
     "DashboardTradeView",
     "DecisionView",
@@ -584,5 +729,6 @@ __all__ = [
     "GeometryView",
     "MarketOverviewView",
     "derive_actionability",
+    "derive_actionability_reason",
     "to_jsonable",
 ]
