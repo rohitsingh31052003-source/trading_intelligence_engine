@@ -51,6 +51,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from engine.models.paper_trade import PaperTrade
+
 
 class ActionabilityState(Enum):
     """
@@ -1416,6 +1418,221 @@ def trade_plan_view_to_jsonable(view: TradePlanView) -> dict[str, Any]:
     }
 
 
+# ============================================================
+# PAPER TRADING (Product Phase 5) — presentation projections
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class PaperTradeView:
+    """
+    Presentation view of a :class:`~engine.models.paper_trade.PaperTrade`.
+
+    A READ-ONLY projection. It implements NO calculation, NO prediction,
+    NO recommendation. Every value is copied verbatim from the
+    paper-trade model (or derived as a presentation string). The system
+    decision (``existing_decision``) is AUTHORITATIVE and is never
+    renamed / upgraded / downgraded. A paper-trade RESULT is a SEPARATE
+    concern from the system DECISION. Target 2 remains ``None`` with
+    ``target_2_supported = False``.
+
+    Attributes are thin projections of the paper-trade model fields; see
+    :class:`~engine.models.paper_trade.PaperTrade` for the authoritative
+    semantics.
+    """
+
+    paper_trade_id: str = ""
+    instrument: str = ""
+    timeframe: str = ""
+    direction: str = ""
+    existing_decision: str = ""
+    setup_type: str = ""
+    plan_id: str = ""
+    created_at: datetime | None = None
+    evaluation_timestamp: datetime | None = None
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    target_1: Decimal | None = None
+    target_2: Decimal | None = None
+    target_2_supported: bool = False
+    engine_risk_distance: Decimal | None = None
+    engine_reward_distance: Decimal | None = None
+    engine_risk_reward_ratio: Decimal | None = None
+    planned_quantity: Decimal | None = None
+    planned_risk: Decimal | None = None
+    maximum_risk: Decimal | None = None
+    account_capital: Decimal | None = None
+    risk_percent: Decimal | None = None
+    status: str = "WAITING_FOR_ENTRY"
+    entry_timestamp: datetime | None = None
+    actual_entry_price: Decimal | None = None
+    exit_timestamp: datetime | None = None
+    actual_exit_price: Decimal | None = None
+    exit_reason: str = ""
+    realized_r: Decimal | None = None
+    realized_pnl: Decimal | None = None
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    sequence: int = 0
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in ("CLOSED", "CANCELLED", "INVALIDATED")
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == "OPEN"
+
+
+def paper_trade_view_to_jsonable(view: PaperTradeView) -> dict[str, Any]:
+    """Convert a :class:`PaperTradeView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. ``Decimal`` values are rendered
+    as their string form so monetary precision survives the JSON round
+    trip; a parallel ``_float`` field is included for convenience
+    consumers. No value is recomputed.
+    """
+
+    def _dec(d: Decimal | None) -> str | None:
+        return None if d is None else str(d)
+
+    def _decf(d: Decimal | None) -> float | None:
+        return None if d is None else float(d)
+
+    def _ts(t: datetime | None) -> str | None:
+        return None if t is None else t.isoformat()
+
+    return {
+        "paper_trade_id": view.paper_trade_id,
+        "instrument": view.instrument,
+        "timeframe": view.timeframe,
+        "direction": view.direction,
+        "existing_decision": view.existing_decision,
+        "setup_type": view.setup_type,
+        "plan_id": view.plan_id,
+        "created_at": _ts(view.created_at),
+        "evaluation_timestamp": _ts(view.evaluation_timestamp),
+        "entry": _dec(view.entry),
+        "entry_float": _decf(view.entry),
+        "stop": _dec(view.stop),
+        "stop_float": _decf(view.stop),
+        "target_1": _dec(view.target_1),
+        "target_1_float": _decf(view.target_1),
+        "target_2": _dec(view.target_2),
+        "target_2_supported": view.target_2_supported,
+        "engine_risk_distance": _dec(view.engine_risk_distance),
+        "engine_risk_distance_float": _decf(view.engine_risk_distance),
+        "engine_reward_distance": _dec(view.engine_reward_distance),
+        "engine_reward_distance_float": _decf(view.engine_reward_distance),
+        "engine_risk_reward_ratio": _dec(view.engine_risk_reward_ratio),
+        "engine_risk_reward_ratio_float": _decf(view.engine_risk_reward_ratio),
+        "planned_quantity": _dec(view.planned_quantity),
+        "planned_quantity_float": _decf(view.planned_quantity),
+        "planned_risk": _dec(view.planned_risk),
+        "planned_risk_float": _decf(view.planned_risk),
+        "maximum_risk": _dec(view.maximum_risk),
+        "maximum_risk_float": _decf(view.maximum_risk),
+        "account_capital": _dec(view.account_capital),
+        "account_capital_float": _decf(view.account_capital),
+        "risk_percent": _dec(view.risk_percent),
+        "risk_percent_float": _decf(view.risk_percent),
+        "status": view.status,
+        "entry_timestamp": _ts(view.entry_timestamp),
+        "actual_entry_price": _dec(view.actual_entry_price),
+        "actual_entry_price_float": _decf(view.actual_entry_price),
+        "exit_timestamp": _ts(view.exit_timestamp),
+        "actual_exit_price": _dec(view.actual_exit_price),
+        "actual_exit_price_float": _decf(view.actual_exit_price),
+        "exit_reason": view.exit_reason,
+        "realized_r": _dec(view.realized_r),
+        "realized_r_float": _decf(view.realized_r),
+        "realized_pnl": _dec(view.realized_pnl),
+        "realized_pnl_float": _decf(view.realized_pnl),
+        "label": view.label,
+        "metadata": [[k, v] for k, v in view.metadata],
+        "sequence": view.sequence,
+        "is_terminal": view.is_terminal,
+        "is_open": view.is_open,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class PaperTradeJournalView:
+    """
+    Presentation view of the paper-trading journal + performance.
+
+    Bundles the ordered list of paper-trade views + the descriptive
+    performance analytics (when computed). The five concerns (system
+    decision / geometry / plan / lifecycle / result) stay separate on
+    every trade row — never collapsed into one signal / score.
+    """
+
+    trades: tuple[PaperTradeView, ...] = field(default_factory=tuple)
+    performance: dict[str, Any] | None = None
+    rationale: str = ""
+    limitations: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.trades) == 0
+
+
+def paper_trade_journal_view_to_jsonable(view: PaperTradeJournalView) -> dict[str, Any]:
+    """Convert a :class:`PaperTradeJournalView` into a JSON dict."""
+
+    return {
+        "trades": [paper_trade_view_to_jsonable(t) for t in view.trades],
+        "performance": view.performance,
+        "rationale": view.rationale,
+        "limitations": view.limitations,
+        "is_empty": view.is_empty,
+    }
+
+
+def to_paper_trade_view(trade: PaperTrade) -> PaperTradeView:
+    """Project a :class:`~engine.models.paper_trade.PaperTrade` into a view.
+
+    Pure projection — every value is copied verbatim. No value is
+    recomputed; no decision / geometry / plan semantics are duplicated.
+    """
+
+    return PaperTradeView(
+        paper_trade_id=trade.paper_trade_id,
+        instrument=trade.instrument,
+        timeframe=trade.timeframe,
+        direction=trade.direction,
+        existing_decision=trade.existing_decision,
+        setup_type=trade.setup_type,
+        plan_id=trade.plan_id,
+        created_at=trade.created_at,
+        evaluation_timestamp=trade.evaluation_timestamp,
+        entry=trade.entry,
+        stop=trade.stop,
+        target_1=trade.target_1,
+        target_2=trade.target_2,
+        target_2_supported=trade.target_2_supported,
+        engine_risk_distance=trade.engine_risk_distance,
+        engine_reward_distance=trade.engine_reward_distance,
+        engine_risk_reward_ratio=trade.engine_risk_reward_ratio,
+        planned_quantity=trade.planned_quantity,
+        planned_risk=trade.planned_risk,
+        maximum_risk=trade.maximum_risk,
+        account_capital=trade.account_capital,
+        risk_percent=trade.risk_percent,
+        status=trade.status.value,
+        entry_timestamp=trade.entry_timestamp,
+        actual_entry_price=trade.actual_entry_price,
+        exit_timestamp=trade.exit_timestamp,
+        actual_exit_price=trade.actual_exit_price,
+        exit_reason=trade.exit_reason.value if trade.exit_reason else "",
+        realized_r=trade.realized_r,
+        realized_pnl=trade.realized_pnl,
+        label=trade.label,
+        metadata=trade.metadata,
+        sequence=trade.sequence,
+    )
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -1425,15 +1642,20 @@ __all__ = [
     "EvidenceView",
     "GeometryView",
     "MarketOverviewView",
+    "PaperTradeJournalView",
+    "PaperTradeView",
     "TradePlanView",
     "WatchlistRowView",
     "WatchlistScanView",
     "WorkstationView",
     "derive_actionability",
     "derive_actionability_reason",
+    "paper_trade_journal_view_to_jsonable",
+    "paper_trade_view_to_jsonable",
     "scan_view_to_jsonable",
     "scanner_rank_key",
     "to_jsonable",
+    "to_paper_trade_view",
     "trade_plan_view_to_jsonable",
     "workstation_why",
     "workstation_view_to_jsonable",

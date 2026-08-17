@@ -11,13 +11,14 @@ roadmap is: Product Phase 1 (live / near-live market-data integration) — COMPL
 Product Phase 2 (multi-instrument scanner & watchlist) — COMPLETE;
 Product Phase 3 (live trading workstation / dashboard) — COMPLETE;
 Product Phase 4 (risk & trade planning) — COMPLETE; Product Phase 5 (paper trading
-& real-world validation) — FUTURE.
+& real-world validation) — COMPLETE.
 
 The architecture is DESCRIPTIVE ONLY: it provides technical-analysis and
 historical research context, does not guarantee future performance, and does not
 constitute a trading recommendation. No ML / probability model / broker /
 live-trading / order-execution / autonomous-trading is included; position sizing
-is a deterministic risk calculation around the existing trade geometry only.
+is a deterministic risk calculation around the existing trade geometry only; paper
+trading is observational validation only and places no real order.
 
 ## Run the dashboard
 
@@ -253,6 +254,78 @@ curl "http://127.0.0.1:8000/api/trade-plan?instrument=NIFTY&timeframe=15m&accoun
 The trade plan is DESCRIPTIVE ONLY — it is a deterministic risk calculation, not a
 prediction or guarantee of future performance, and not a trading recommendation.
 
+## Paper trading & real-world validation (Product Phase 5)
+
+The workstation has a **Paper Trading** journal page (`GET /paper-trading`) and
+REST endpoints under `/api/paper-trades` that record what the system's EXISTING
+trade opportunities would have done if followed in real / near-live market
+conditions. A human reviews an opportunity on the workstation, then deliberately
+creates a paper trade; the system tracks observed entry / exit conditions against
+COMPLETED market candles and records the result.
+
+```bash
+# Create a paper trade from the existing current analysis + trade plan:
+curl -X POST "http://127.0.0.1:8000/api/paper-trades?instrument=NIFTY&timeframe=15m&account_capital=100000&risk_percent=1"
+# Track an open paper trade against the latest completed candles:
+curl -X POST "http://127.0.0.1:8000/api/paper-trades/<id>/track"
+# Review the journal + descriptive performance:
+curl "http://127.0.0.1:8000/api/paper-trades"
+```
+
+- **Purpose** — establish a disciplined feedback loop: SYSTEM OBSERVATION → SYSTEM
+  DECISION → TRADE PLAN → PAPER TRADE → REAL MARKET OBSERVATION → ACTUAL RESULT →
+  MEASURED VALIDATION. It does **not** predict the market, does **not** guarantee
+  profitability, and does **not** place any real order.
+- **Authoritative reuse** — the existing Sprint 11S decision (`REJECTED` /
+  `WATCH` / `QUALIFIED` / `PREFERRED`), the existing Sprint 11R trade geometry
+  (entry / stop / target / risk / reward / R:R), and the existing Product Phase 4
+  trade plan (account capital / risk % / maximum risk / quantity / planned risk)
+  are reused **verbatim**. The paper-trading layer performs NO new position sizing
+  and never recomputes geometry. Target 2 remains unsupported.
+- **Lifecycle** — `WAITING_FOR_ENTRY` → `OPEN` → `CLOSED` (or `CANCELLED` /
+  `INVALIDATED`). Illegal transitions fail safely (never silently converted into
+  success). A human creates the trade deliberately; there is **no automatic
+  trading** and the scanner is not turned into an auto-trading strategy.
+- **Entry rule** (conservative, deterministic) — a paper trade enters when a
+  COMPLETED candle after creation touches the entry reference (LONG: `low <= entry`;
+  SHORT: `high >= entry`). Entry price = the planned entry reference. If no
+  completed candle touches entry within `max_entry_bars`, the trade remains
+  `WAITING_FOR_ENTRY` (no fabricated entry).
+- **Exit rule** (reuses the Sprint 11W touch semantics) — once OPEN, completed
+  candles strictly after the entry candle are watched for stop / target touches.
+  Same-candle both-touch → `BOTH_TOUCHED` (ambiguous; a winner / loser is NEVER
+  manufactured; `realized_r` / `realized_pnl` are `None`). Neither within
+  `max_holding_bars` → `EXPIRED` (mark-to-close). `MANUAL_CLOSE` is a human action.
+- **P&L / R accounting** (Decimal) — `risk = abs(entry - stop)`; LONG
+  `realized_r = (exit-entry)/risk`, SHORT `(entry-exit)/risk`;
+  `realized_pnl = (exit-entry)*quantity` (LONG) / `(entry-exit)*quantity` (SHORT).
+  `realized_r` / `realized_pnl` are `None` for `BOTH_TOUCHED` / `NO_GEOMETRY` /
+  unresolved states — never fabricated.
+- **Performance** (descriptive) — total / open / closed / wins / losses / ambiguous
+  / expired / win rate / total + average + median realized R / profit factor /
+  total realized P&L, plus breakdowns by instrument / direction / decision /
+  setup type / timeframe. `BOTH_TOUCHED` is excluded from win/loss + R;
+  `NO_GEOMETRY` is excluded from R/P&L. No statistical significance / probability /
+  confidence score is claimed.
+- **Decision vs result** — the journal STRICTLY distinguishes the SYSTEM DECISION
+  from the PAPER-TRADE RESULT: a `QUALIFIED` decision that resulted in a `LOSS`
+  does NOT become `REJECTED`, and a `LOSS` never implies the decision was wrong.
+  The system records what happened; it never retroactively rewrites the decision.
+- **Persistence** — paper trades are persisted as schema-versioned JSON files
+  (one per trade, atomic writes) in `./paper_trades` (overridable via
+  `DASHBOARD_PAPER_TRADE_DIR`); they survive page refreshes / process restarts.
+  No `pickle` / `eval` / `exec`; safe-id validation prevents path traversal;
+  corrupted records fail safely.
+- **No broker / no real money** — there is absolutely no broker API, no order
+  placement, no real-money execution, no authentication tokens, no live positions.
+  Paper trading is PAPER ONLY.
+- **No-look-ahead** — the tracker inspects ONLY completed candles with
+  `timestamp <= reference_now`; forming / future-dated candles are excluded. The
+  Sprint 11W `OutcomeEvaluator` and the `HistoricalEvaluationPipeline` are NEVER
+  invoked to determine current paper-trade state (the touch logic is implemented
+  directly in the paper-trading engine). A previously-resolved (terminal) paper
+  trade is never altered by future candles.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures
@@ -317,17 +390,19 @@ analysis (entry / stop / target / decision).
 
 ## What the dashboard does NOT do
 
-The dashboard (including the live trading workstation and the trade-plan /
-risk-planning layer) is descriptive/contextual. It does **not** guarantee future
-performance, does **not** predict winning trades, does **not** claim high accuracy
-or guaranteed signals, and does **not** imply a "profitable strategy". It has no
-broker integration, no order placement, no live execution, no autonomous trading,
-and no portfolio management. The trade-plan layer performs a deterministic
-position-sizing calculation around the existing trade geometry only — it does
-**not** generate BUY/SELL signals and is not a prediction. There is no background
-polling / WebSocket streaming / autonomous trading. Paper trading & real-world
-validation (Product Phase 5), and broker integration / order execution, are
-intentionally out of scope for the current phase.
+The dashboard (including the live trading workstation, the trade-plan /
+risk-planning layer, and the paper-trading layer) is descriptive/contextual. It
+does **not** guarantee future performance, does **not** predict winning trades,
+does **not** claim high accuracy or guaranteed signals, and does **not** imply a
+"profitable strategy". It has no broker integration, no order placement, no live
+execution, no autonomous trading, and no portfolio management. The trade-plan
+layer performs a deterministic position-sizing calculation around the existing
+trade geometry only — it does **not** generate BUY/SELL signals and is not a
+prediction. The paper-trading layer records observational validation only — it
+places no real order, never rewrites the original system decision, and is not a
+trading recommendation. There is no background polling / WebSocket streaming /
+autonomous trading. Broker integration / real-money order execution are
+intentionally out of scope.
 
 See `AGENTS.md` for the full architecture, the dashboard section, API routes,
 no-look-ahead guarantees, trade-geometry semantics and limitations.

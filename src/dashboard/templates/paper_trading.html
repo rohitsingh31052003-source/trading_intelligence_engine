@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}Paper Trading &mdash; Trading Intelligence Dashboard{% endblock %}
+{% block content %}
+
+<section class="card selector">
+  <div class="workstation-head">
+    <h1 class="workstation-title">Paper Trading Journal</h1>
+    <span class="badge">{{ journal.trades | length }} trade(s)</span>
+  </div>
+  <p class="hint">
+    Paper trading is <strong>observational validation</strong> of how the system&rsquo;s existing
+    trade opportunities would have performed. A human creates a paper trade deliberately from the
+    <a href="/workstation">workstation</a>; this page records and reviews the results. The existing
+    system decision (REJECTED / WATCH / QUALIFIED / PREFERRED) is <strong>AUTHORITATIVE</strong> and
+    is never renamed / upgraded / downgraded. A paper-trade RESULT is a SEPARATE concern from the
+    system DECISION: a QUALIFIED decision that resulted in a LOSS does NOT become REJECTED, and a
+    LOSS never implies the decision was wrong. No real order is placed; no broker is involved; this
+    is NOT automatic trading.
+  </p>
+  <p class="hint warning">
+    Paper trading does <strong>not</strong> guarantee future performance and does <strong>not</strong>
+    constitute financial advice. BOTH_TOUCHED (ambiguous) trades are excluded from win/loss + R;
+    NO_GEOMETRY trades are excluded from R/P&amp;L. No statistical significance is claimed.
+  </p>
+</section>
+
+{% if journal.is_empty %}
+<section class="card">
+  <h2>No Paper Trades Recorded</h2>
+  <p class="hint">
+    No paper trades have been created yet. Use the
+    <a href="/workstation">workstation</a> to review an opportunity, build a trade plan, then create
+    a paper trade from it. Once created, paper trades are tracked against completed market candles
+    and resolved honestly (stop / target / ambiguous / expired / manual close).
+  </p>
+</section>
+{% else %}
+
+{# ---------------- OVERALL PERFORMANCE ---------------- #}
+{% if journal.performance %}
+<section class="card">
+  <h2>Overall Performance (Descriptive)</h2>
+  <div class="metric-grid">
+    <div class="metric">
+      <span class="metric-label">Total Trades</span>
+      <span class="metric-value">{{ journal.performance.overall.total }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Open</span>
+      <span class="metric-value">{{ journal.performance.overall.open }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Closed</span>
+      <span class="metric-value">{{ journal.performance.overall.closed }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Waiting</span>
+      <span class="metric-value">{{ journal.performance.overall.waiting }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Cancelled</span>
+      <span class="metric-value">{{ journal.performance.overall.cancelled }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Invalidated</span>
+      <span class="metric-value">{{ journal.performance.overall.invalidated }}</span>
+    </div>
+  </div>
+  <div class="metric-grid">
+    <div class="metric">
+      <span class="metric-label">Wins (TARGET_HIT)</span>
+      <span class="metric-value">{{ journal.performance.overall.wins }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Losses (STOP_HIT)</span>
+      <span class="metric-value">{{ journal.performance.overall.losses }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Ambiguous (BOTH_TOUCHED)</span>
+      <span class="metric-value">{{ journal.performance.overall.ambiguous }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Expired</span>
+      <span class="metric-value">{{ journal.performance.overall.expired }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Manual Close</span>
+      <span class="metric-value">{{ journal.performance.overall.manual_close }}</span>
+    </div>
+  </div>
+  <div class="metric-grid">
+    <div class="metric">
+      <span class="metric-label">Win Rate</span>
+      <span class="metric-value">{{ journal.performance.overall.win_rate | fmt_pct }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Avg Realized R</span>
+      <span class="metric-value">{{ journal.performance.overall.average_realized_r | fmt_r }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Total Realized R</span>
+      <span class="metric-value">{{ journal.performance.overall.total_realized_r | fmt_r }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Profit Factor</span>
+      <span class="metric-value">{{ journal.performance.overall.profit_factor | fmt_ratio }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Total Realized P&amp;L</span>
+      <span class="metric-value">{{ journal.performance.overall.total_realized_pnl | fmt_money }}</span>
+    </div>
+  </div>
+  <p class="hint">{{ journal.rationale }}</p>
+</section>
+{% endif %}
+
+{# ---------------- TRADE JOURNAL TABLE ---------------- #}
+<section class="card">
+  <h2>Paper Trade Journal</h2>
+  <p class="hint">
+    Each row distinguishes the SYSTEM DECISION (authoritative) from the PAPER-TRADE RESULT.
+    A LOSS never implies the decision was wrong; a WIN never confirms the decision was right.
+  </p>
+  <table class="scanner-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Instrument</th>
+        <th>Dir</th>
+        <th>Decision</th>
+        <th>Status</th>
+        <th>Entry</th>
+        <th>Stop</th>
+        <th>Target 1</th>
+        <th>Exit</th>
+        <th>Exit Reason</th>
+        <th>Realized R</th>
+        <th>Realized P&amp;L</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in journal.trades %}
+      <tr class="actionability-{{ t.status }}">
+        <td>{{ loop.index }}</td>
+        <td>{{ t.instrument }}</td>
+        <td>{{ t.direction or '-' }}</td>
+        <td>{{ t.existing_decision or '-' }}</td>
+        <td>{{ t.status }}</td>
+        <td>{{ t.entry | fmt_money }}</td>
+        <td>{{ t.stop | fmt_money }}</td>
+        <td>{{ t.target_1 | fmt_money }}</td>
+        <td>{{ t.actual_exit_price | fmt_money }}</td>
+        <td>{{ t.exit_reason or '-' }}</td>
+        <td>{{ t.realized_r | fmt_r }}</td>
+        <td>{{ t.realized_pnl | fmt_money }}</td>
+        <td>{{ t.created_at | fmt_ts }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{# ---------------- TRADE DETAIL ---------------- #}
+<section class="card">
+  <h2>Trade Detail</h2>
+  {% for t in journal.trades %}
+  <div class="trade-detail-block">
+    <h3>{{ t.instrument }} &mdash; {{ t.direction or 'NONE' }} ({{ t.status }})</h3>
+    <p class="hint"><strong>Paper Trade ID:</strong> {{ t.paper_trade_id }}</p>
+    <div class="metric-grid">
+      <div class="metric">
+        <span class="metric-label">System Decision</span>
+        <span class="metric-value">{{ t.existing_decision or 'unavailable' }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Setup Type</span>
+        <span class="metric-value">{{ t.setup_type or 'unavailable' }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Entry</span>
+        <span class="metric-value">{{ t.entry | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Stop</span>
+        <span class="metric-value">{{ t.stop | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Target 1</span>
+        <span class="metric-value">{{ t.target_1 | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Target 2</span>
+        <span class="metric-value">unsupported</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Planned Quantity</span>
+        <span class="metric-value">{{ t.planned_quantity | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Planned Risk</span>
+        <span class="metric-value">{{ t.planned_risk | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Actual Entry</span>
+        <span class="metric-value">{{ t.actual_entry_price | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Actual Exit</span>
+        <span class="metric-value">{{ t.actual_exit_price | fmt_money }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Realized R</span>
+        <span class="metric-value">{{ t.realized_r | fmt_r }}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Realized P&amp;L</span>
+        <span class="metric-value">{{ t.realized_pnl | fmt_money }}</span>
+      </div>
+    </div>
+    {% if t.exit_reason == 'BOTH_TOUCHED' %}
+    <p class="hint warning">
+      AMBIGUOUS: a single completed candle touched BOTH the stop and the target; intrabar ordering
+      is unavailable so the first touch cannot be determined. A winner or loser is NEVER
+      manufactured; realized R / P&amp;L are unavailable.
+    </p>
+    {% endif %}
+    {% if t.status == 'WAITING_FOR_ENTRY' or t.status == 'OPEN' %}
+    <p class="hint">
+      This trade is <strong>{{ t.status }}</strong>. Use the track endpoint to advance it against
+      the latest completed candles, or manually close / cancel it.
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Limitations</h2>
+  <p class="hint">{{ journal.limitations or 'Paper trading persistence is configured.' }}</p>
+  <p class="hint warning">
+    Paper trading is observational validation. It does NOT guarantee future performance and does NOT
+    constitute financial advice. No real order is placed; no broker is involved. The existing
+    decision engine remains authoritative; paper-trade results NEVER rewrite the original system
+    decision and are NOT a BUY/SELL/ENTER/EXIT/HOLD recommendation.
+  </p>
+</section>
+
+{% endblock %}

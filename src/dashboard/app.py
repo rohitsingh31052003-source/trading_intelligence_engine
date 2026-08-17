@@ -29,16 +29,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from dashboard.data_provider import make_provider
+from dashboard.paper_trade_store import (
+    PaperTradeStore,
+    default_paper_trade_directory,
+)
 from dashboard.services import (
     AnalysisRequest,
     DashboardAnalysisService,
     EvidenceSource,
+    PaperTradeManualCloseRequest,
+    PaperTradeRequest,
+    PaperTradeTrackRequest,
     ScanRequest,
     TradePlanRequest,
     WorkstationRequest,
     default_service,
 )
 from dashboard.views import (
+    paper_trade_journal_view_to_jsonable,
+    paper_trade_view_to_jsonable,
     scan_view_to_jsonable,
     to_jsonable,
     trade_plan_view_to_jsonable,
@@ -117,9 +126,17 @@ def _build_default_service() -> DashboardAnalysisService:
                 evidence_report = _load_evidence_report(evidence_path)
             except Exception:  # pragma: no cover - env dependent
                 evidence_report = None
+        # Product Phase 5 — paper-trade persistence. Defaults to a local
+        # ``./paper_trades`` directory (overridable via DASHBOARD_PAPER_TRADE_DIR).
+        # When the env var is explicitly empty, persistence is disabled.
+        pt_dir_env = os.environ.get("DASHBOARD_PAPER_TRADE_DIR", "")
+        if pt_dir_env == "":
+            pt_dir_env = str(default_paper_trade_directory())
+        paper_trade_store = PaperTradeStore(directory=pt_dir_env)
         _DEFAULT_SERVICE = default_service(
             provider_name=provider_name,
             evidence_report=evidence_report,
+            paper_trade_store=paper_trade_store,
         )
     return _DEFAULT_SERVICE
 
@@ -466,6 +483,157 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             ),
         )
         return trade_plan_view_to_jsonable(plan_view)
+
+    # ------------------------------------------------------------
+    # PAPER TRADING (Product Phase 5)
+    # ------------------------------------------------------------
+
+    @app.get("/paper-trading", response_class=HTMLResponse)
+    def paper_trading_page(request: Request):
+        """Paper-trading journal + performance view (Product Phase 5).
+
+        Lists all persisted paper trades (ordered by id) + the descriptive
+        performance analytics. A human creates paper trades deliberately
+        from the workstation; this page is the review / validation
+        surface. No automatic trading; no BUY/SELL recommendation.
+        """
+
+        svc = _service()
+        journal = svc.paper_trade_journal(include_performance=True)
+        ctx = {
+            "request": request,
+            "journal": journal,
+            "journal_json": paper_trade_journal_view_to_jsonable(journal),
+        }
+        return templates.TemplateResponse(request, "paper_trading.html", ctx)
+
+    @app.get("/api/paper-trades", response_class=JSONResponse)
+    def api_paper_trades():
+        """Structured JSON for the paper-trading journal + performance."""
+
+        svc = _service()
+        journal = svc.paper_trade_journal(include_performance=True)
+        return paper_trade_journal_view_to_jsonable(journal)
+
+    @app.get("/api/paper-trades/{paper_trade_id}", response_class=JSONResponse)
+    def api_paper_trade(paper_trade_id: str):
+        """Structured JSON for a single paper trade."""
+
+        svc = _service()
+        view = svc.load_paper_trade(paper_trade_id)
+        return paper_trade_view_to_jsonable(view)
+
+    @app.post("/api/paper-trades", response_class=JSONResponse)
+    def api_create_paper_trade(
+        instrument: str,
+        timeframe: str = "15m",
+        account_capital: str = "",
+        risk_percent: str = "",
+    ):
+        """Create a paper trade from the EXISTING current analysis + plan.
+
+        Accepts ``instrument``, ``timeframe``, ``account_capital`` and
+        ``risk_percent``. The paper trade reuses the EXISTING current
+        analysis' trade geometry + the Phase 4 trade plan VERBATIM; it
+        never accepts arbitrary entry / stop / target values. The created
+        trade is ``WAITING_FOR_ENTRY`` (or ``INVALIDATED`` when geometry
+        is incomplete — never fabricated). A human creates the trade
+        deliberately; this is NOT automatic trading. The response never
+        contains a BUY/SELL recommendation.
+        """
+
+        from datetime import datetime,timezone
+
+        svc = _service()
+        view = svc.create_paper_trade(
+            PaperTradeRequest(
+                instrument=instrument,
+                account_capital=account_capital,
+                risk_percent=risk_percent,
+                setup_timeframe=timeframe,
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        return paper_trade_view_to_jsonable(view)
+
+    @app.post(
+        "/api/paper-trades/{paper_trade_id}/track", response_class=JSONResponse,
+    )
+    def api_track_paper_trade(paper_trade_id: str):
+        """Advance a paper trade's lifecycle using the latest completed candles.
+
+        Only completed candles are inspected (no look-ahead; no forming
+        candle). A previously-resolved (terminal) paper trade is returned
+        unchanged. The Sprint 11W outcome evaluator + historical pipeline
+        are NEVER invoked.
+        """
+
+        from datetime import datetime,timezone
+
+        svc = _service()
+        view = svc.track_paper_trade(
+            PaperTradeTrackRequest(
+                paper_trade_id=paper_trade_id,
+                reference_now=datetime.now(timezone.utc),
+            ),
+        )
+        return paper_trade_view_to_jsonable(view)
+
+    @app.post(
+        "/api/paper-trades/{paper_trade_id}/close", response_class=JSONResponse,
+    )
+    def api_close_paper_trade(
+        paper_trade_id: str,
+        exit_price: str,
+        exit_timestamp: str = "",
+    ):
+        """Manually close an OPEN paper trade at an observed market price.
+
+        This is a HUMAN action — the caller supplies an exit price +
+        timestamp. It is NOT an automatic execution and NOT a broker
+        order. Only an OPEN trade may be closed; illegal transitions fail
+        safely (HTTP 400).
+        """
+
+        from datetime import datetime,timezone
+        from decimal import Decimal
+
+        svc = _service()
+        try:
+            ts = (
+                datetime.fromisoformat(exit_timestamp)
+                if exit_timestamp
+                else datetime.now(timezone.utc)
+            )
+            view = svc.manually_close_paper_trade(
+                PaperTradeManualCloseRequest(
+                    paper_trade_id=paper_trade_id,
+                    exit_price=Decimal(exit_price),
+                    exit_timestamp=ts,
+                ),
+            )
+        except (ValueError, LookupError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_manual_close", "detail": str(exc)},
+            )
+        return paper_trade_view_to_jsonable(view)
+
+    @app.post(
+        "/api/paper-trades/{paper_trade_id}/cancel", response_class=JSONResponse,
+    )
+    def api_cancel_paper_trade(paper_trade_id: str):
+        """Cancel a WAITING_FOR_ENTRY paper trade (human action)."""
+
+        svc = _service()
+        try:
+            view = svc.cancel_paper_trade(paper_trade_id)
+        except (ValueError, LookupError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_cancel", "detail": str(exc)},
+            )
+        return paper_trade_view_to_jsonable(view)
 
     return app
 

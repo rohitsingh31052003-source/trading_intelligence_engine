@@ -46,16 +46,22 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from engine.config.market_scan_config import MarketScanConfig
+from engine.config.paper_trade_config import PaperTradeConfig
 from engine.config.trade_plan_config import TradePlanConfig
 from engine.intelligence.market_scanner import (
     InstrumentDataset,
     MarketScanner,
     ScanEngines,
 )
+from engine.intelligence.paper_trade_performance import (
+    PaperTradePerformanceEngine,
+)
+from engine.intelligence.paper_trading import PaperTradingEngine
 from engine.intelligence.trade_planning import TradePlanningEngine
 from engine.models.market_context import MarketContext
 from engine.models.market_scan import InstrumentScanResult, MTFAlignment
 from engine.models.ohlcv import OHLCVCandle
+from engine.models.paper_trade import PaperTrade
 from engine.models.trade_plan import TradePlan
 
 from dashboard.data_provider import (
@@ -79,13 +85,19 @@ from dashboard.views import (
     EvidenceView,
     GeometryView,
     MarketOverviewView,
+    PaperTradeJournalView,
+    PaperTradeView,
     TradePlanView,
     WatchlistRowView,
     WatchlistScanView,
     WorkstationView,
     derive_actionability,
     derive_actionability_reason,
+    paper_trade_journal_view_to_jsonable,
+    paper_trade_view_to_jsonable,
     scanner_rank_key,
+    to_jsonable,
+    to_paper_trade_view,
     workstation_why,
 )
 from dashboard.watchlist import Watchlist
@@ -238,6 +250,81 @@ class TradePlanRequest:
 
 
 @dataclass(frozen=True)
+class PaperTradeRequest:
+    """
+    A paper-trade creation request (Product Phase 5).
+
+    Pairs the existing current analysis (instrument + setup timeframe) +
+    the existing trade geometry + the existing Product Phase 4 trade plan
+    (reused verbatim) to create a PAPER TRADE. The paper trade reuses the
+    EXISTING decision / geometry / plan verbatim; it NEVER accepts
+    arbitrary entry / stop / target values that would bypass the
+    authoritative engine geometry.
+
+    A human creates a paper trade deliberately; this is NOT automatic
+    trading. The scanner is NOT turned into an auto-trading strategy.
+
+    Attributes:
+
+    instrument
+        Canonical instrument name to paper-trade.
+
+    account_capital / risk_percent
+        User-supplied account-risk parameters (reused by the Phase 4
+        planner to size the position). The paper-trade layer performs NO
+        new position sizing.
+
+    setup_timeframe / context_timeframe
+        Dashboard setup / context timeframe pair.
+
+    created_at
+        Explicit creation timestamp (the human action time). Caller-
+        supplied so tests are deterministic (no wall-clock read).
+
+    sequence
+        Instance discriminator so two paper trades created from the same
+        opportunity at the same ``created_at`` do not collapse into one
+        record. Default ``0``.
+
+    label / metadata
+        Optional identity / metadata carried onto the paper trade.
+    """
+
+    instrument: str
+    account_capital: Any
+    risk_percent: Any
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+    created_at: datetime | None = None
+    sequence: int = 0
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class PaperTradeTrackRequest:
+    """
+    A paper-trade tracking request (Product Phase 5).
+
+    Advances a paper trade's lifecycle using COMPLETED market candles up
+    to ``reference_now``. Only candles with ``timestamp <= reference_now``
+    are inspected (forming candles excluded). No future candle is read.
+    """
+
+    paper_trade_id: str
+    reference_now: datetime
+
+
+@dataclass(frozen=True)
+class PaperTradeManualCloseRequest:
+    """A manual-close request for an OPEN paper trade (human action)."""
+
+    paper_trade_id: str
+    exit_price: Any
+    exit_timestamp: datetime
+
+
+@dataclass(frozen=True)
 class ChartPayload:
     """
     Candlestick chart payload (backend-authored; the frontend renders
@@ -290,6 +377,7 @@ class DashboardAnalysisService:
         staleness_seconds: int = DEFAULT_STALENESS_SECONDS,
         max_chart_candles: int = 120,
         freshness_config: FreshnessConfig | None = None,
+        paper_trade_store: Any | None = None,
     ) -> None:
         # Freshness config is DATA QUALITY only — it never alters the
         # intelligence engine's decision semantics. When the provider was
@@ -326,6 +414,17 @@ class DashboardAnalysisService:
         # market analysis / decision / prediction. The existing decision
         # and geometry remain AUTHORITATIVE.
         self.trade_planning_engine = TradePlanningEngine(TradePlanConfig())
+        # Product Phase 5 — paper trading & real-world validation. A
+        # recording / validation layer that reuses the existing decision
+        # + geometry + Phase 4 plan verbatim. It performs NO market
+        # analysis / decision / prediction / execution. The existing
+        # decision is AUTHORITATIVE; a paper-trade RESULT never rewrites
+        # the original system decision. The paper-trade store is OPTIONAL
+        # — when None, paper trades are not persisted (the service still
+        # creates / tracks / resolves in-memory trades).
+        self.paper_trading_engine = PaperTradingEngine(PaperTradeConfig())
+        self.paper_trade_performance_engine = PaperTradePerformanceEngine()
+        self.paper_trade_store = paper_trade_store
 
     # ------------------------------------------------------------
     # METADATA (for selectors)
@@ -807,6 +906,247 @@ class DashboardAnalysisService:
             metadata=dict(request.metadata) if request.metadata else None,
         )
         return _to_trade_plan_view(plan)
+
+    # ------------------------------------------------------------
+    # PAPER TRADING (Product Phase 5)
+    # ------------------------------------------------------------
+
+    def create_paper_trade(self, request: PaperTradeRequest) -> PaperTradeView:
+        """
+        Create a paper trade from the EXISTING current analysis + the
+        existing Product Phase 4 trade plan.
+
+        ORCHESTRATION ONLY: reuses :meth:`analyze` (existing pipeline) +
+        :meth:`plan_trade`'s planner to obtain the authoritative geometry
+        + plan, then delegates to :class:`PaperTradingEngine.create`. The
+        existing decision / geometry / plan are reused VERBATIM — never
+        recomputed, never renamed to BUY/SELL, never upgraded / downgraded.
+        Target 2 remains unsupported.
+
+        The paper trade is persisted to the store (when one is attached)
+        so it survives restarts. The created trade is in
+        ``WAITING_FOR_ENTRY`` (or ``INVALIDATED`` when geometry is
+        incomplete — never fabricated).
+
+        GUARANTEES: reuse-only; completed-candle guarantee inherited
+        from :meth:`analyze`; no look-ahead (accepts NO
+        ``future`` / ``future_candles`` argument; never calls the Sprint
+        11W outcome evaluator; never runs the historical pipeline); no
+        prediction (NO BUY/SELL/ENTER/EXIT/HOLD recommendation; NO
+        probability). A human creates the trade deliberately — this is
+        NOT automatic trading.
+        """
+
+        view = self.analyze(
+            AnalysisRequest(
+                instrument=request.instrument,
+                setup_timeframe=request.setup_timeframe,
+                context_timeframe=request.context_timeframe,
+            ),
+        )
+        geom = view.geometry
+        # Reuse the Phase 4 planner to size the position verbatim.
+        plan = self.trade_planning_engine.plan(
+            instrument=request.instrument,
+            timeframe=request.setup_timeframe,
+            account_capital=request.account_capital,
+            risk_percent=request.risk_percent,
+            geometry=geom,
+            direction=geom.direction,
+            existing_decision=view.decision.decision_classification,
+            actionability=view.actionability.value,
+            label=request.label,
+            metadata=dict(request.metadata) if request.metadata else None,
+        )
+        created_at = request.created_at or view.evaluation_timestamp or datetime.utcnow()
+        setup_type = view.setup_type or ""
+        trade = self.paper_trading_engine.create(
+            instrument=request.instrument,
+            timeframe=request.setup_timeframe,
+            direction=geom.direction,
+            existing_decision=view.decision.decision_classification,
+            setup_type=setup_type,
+            plan=plan,
+            plan_id=plan.plan_id,
+            created_at=created_at,
+            evaluation_timestamp=view.evaluation_timestamp,
+            label=request.label,
+            metadata=dict(request.metadata) if request.metadata else None,
+            sequence=request.sequence,
+        )
+        if self.paper_trade_store is not None:
+            self.paper_trade_store.save(trade, overwrite=True)
+        return to_paper_trade_view(trade)
+
+    def track_paper_trade(
+        self, request: PaperTradeTrackRequest,
+    ) -> PaperTradeView:
+        """
+        Advance a paper trade's lifecycle using COMPLETED market candles.
+
+        Loads the persisted paper trade (when a store is attached) or
+        raises :class:`LookupError`. Fetches the instrument's completed
+        setup candles via the provider (completed-candle boundary
+        inherited from Product Phase 1) and delegates to
+        :meth:`PaperTradingEngine.track`. Only candles with
+        ``timestamp <= reference_now`` are inspected (forming candles
+        excluded); no future candle is read. A previously-resolved
+        (terminal) paper trade is returned UNCHANGED.
+
+        The engine NEVER calls the Sprint 11W ``OutcomeEvaluator`` and
+        NEVER runs the ``HistoricalEvaluationPipeline`` (the touch logic
+        is implemented directly in the paper-trading engine). The
+        updated trade is persisted.
+        """
+
+        if self.paper_trade_store is None:
+            raise LookupError(
+                "No paper-trade store attached; cannot load paper trade "
+                f"{request.paper_trade_id!r}."
+            )
+        trade = self.paper_trade_store.load(request.paper_trade_id)
+        return self._track_trade_with_view(trade, request.reference_now)
+
+    def track_open_paper_trades(
+        self, reference_now: datetime,
+    ) -> list[PaperTradeView]:
+        """
+        Advance ALL non-terminal paper trades using the latest completed
+        candles. Returns the updated views (terminal trades unchanged).
+
+        Failure isolation: a single trade that fails to load / track is
+        skipped (the failure is surfaced in the returned list as the
+        trade's prior state, never raised). One bad trade never aborts
+        the whole batch.
+        """
+
+        if self.paper_trade_store is None:
+            return []
+        updated: list[PaperTradeView] = []
+        for pid in self.paper_trade_store.list_trades():
+            try:
+                trade = self.paper_trade_store.load(pid)
+            except Exception:  # noqa: BLE001 - failure isolation
+                continue
+            if trade.is_terminal:
+                updated.append(to_paper_trade_view(trade))
+                continue
+            try:
+                view = self._track_trade_with_view(trade, reference_now)
+                updated.append(view)
+            except Exception:  # noqa: BLE001 - failure isolation
+                updated.append(to_paper_trade_view(trade))
+        return updated
+
+    def _track_trade_with_view(
+        self, trade: PaperTrade, reference_now: datetime,
+    ) -> PaperTradeView:
+        # Fetch completed setup candles for the trade's instrument +
+        # timeframe (completed-candle boundary inherited from Phase 1).
+        series = self.provider.fetch(trade.instrument, trade.timeframe)
+        candles = series.setup_candles if series.available else ()
+        updated = self.paper_trading_engine.track(
+            trade,
+            completed_candles=candles,
+            reference_now=reference_now,
+        )
+        if self.paper_trade_store is not None:
+            self.paper_trade_store.save(updated, overwrite=True)
+        return to_paper_trade_view(updated)
+
+    def manually_close_paper_trade(
+        self, request: PaperTradeManualCloseRequest,
+    ) -> PaperTradeView:
+        """
+        Close an OPEN paper trade manually at an observed market price.
+
+        This is a HUMAN action — the caller supplies an exit price +
+        timestamp. The engine records it honestly and computes realized
+        R / P&L. It is NOT an automatic execution and NOT a broker
+        order. Only an OPEN trade may be manually closed; illegal
+        transitions raise :class:`ValueError` (never silently converted
+        into success).
+        """
+
+        if self.paper_trade_store is None:
+            raise LookupError(
+                "No paper-trade store attached; cannot load paper trade "
+                f"{request.paper_trade_id!r}."
+            )
+        trade = self.paper_trade_store.load(request.paper_trade_id)
+        updated = self.paper_trading_engine.close_manually(
+            trade,
+            exit_price=request.exit_price,
+            exit_timestamp=request.exit_timestamp,
+        )
+        self.paper_trade_store.save(updated, overwrite=True)
+        return to_paper_trade_view(updated)
+
+    def cancel_paper_trade(self, paper_trade_id: str) -> PaperTradeView:
+        """Cancel a WAITING_FOR_ENTRY paper trade (human action)."""
+
+        if self.paper_trade_store is None:
+            raise LookupError(
+                "No paper-trade store attached; cannot load paper trade "
+                f"{paper_trade_id!r}."
+            )
+        trade = self.paper_trade_store.load(paper_trade_id)
+        updated = self.paper_trading_engine.cancel(trade)
+        self.paper_trade_store.save(updated, overwrite=True)
+        return to_paper_trade_view(updated)
+
+    def load_paper_trade(self, paper_trade_id: str) -> PaperTradeView:
+        """Load a single persisted paper trade as a view."""
+
+        if self.paper_trade_store is None:
+            raise LookupError("No paper-trade store attached.")
+        trade = self.paper_trade_store.load(paper_trade_id)
+        return to_paper_trade_view(trade)
+
+    def paper_trade_journal(
+        self,
+        *,
+        include_performance: bool = True,
+    ) -> PaperTradeJournalView:
+        """
+        Build the paper-trading journal view (ordered trades + optional
+        descriptive performance analytics).
+
+        Loads all persisted paper trades (sorted by id), projects them
+        into views, and (when ``include_performance``) aggregates them
+        via :class:`PaperTradePerformanceEngine`. The five concerns
+        (system decision / geometry / plan / lifecycle / result) stay
+        separate on every trade row — never collapsed into one signal /
+        score. Performance is DESCRIPTIVE ONLY.
+        """
+
+        if self.paper_trade_store is None:
+            return PaperTradeJournalView(
+                rationale="No paper-trade store attached.",
+                limitations="Paper trading persistence is not configured.",
+            )
+        trades = self.paper_trade_store.load_all()
+        views = tuple(to_paper_trade_view(t) for t in trades)
+        performance_dict: dict[str, Any] | None = None
+        rationale = ""
+        limitations = ""
+        if include_performance:
+            analytics = self.paper_trade_performance_engine.analyze(trades)
+            performance_dict = _performance_to_jsonable(analytics)
+            rationale = analytics.rationale
+            limitations = (
+                "Paper-trading performance is DESCRIPTIVE observational "
+                "validation; it does NOT predict future performance and "
+                "does NOT constitute financial advice. BOTH_TOUCHED "
+                "(ambiguous) trades are excluded from win/loss + R; "
+                "NO_GEOMETRY trades are excluded from R/P&L."
+            )
+        return PaperTradeJournalView(
+            trades=views,
+            performance=performance_dict,
+            rationale=rationale,
+            limitations=limitations,
+        )
 
     def _scan_one(
         self,
@@ -1290,6 +1630,76 @@ def _to_trade_plan_view(plan: TradePlan) -> TradePlanView:
     )
 
 
+def _performance_to_jsonable(analytics: Any) -> dict[str, Any]:
+    """Project a :class:`PaperTradePerformanceAnalytics` into a JSON dict.
+
+    Pure projection — DESCRIPTIVE ONLY. ``Decimal`` P&L values are
+    rendered as strings so monetary precision survives the JSON round
+    trip; a parallel ``_float`` field is included for convenience. No
+    statistical-significance / predictive claim is made.
+    """
+
+    def _dec(d: Decimal | None) -> str | None:
+        return None if d is None else str(d)
+
+    def _decf(d: Decimal | None) -> float | None:
+        return None if d is None else float(d)
+
+    def _rate(r: float | None) -> float | None:
+        return None if r is None else float(r)
+
+    def _stats(s: Any) -> dict[str, Any]:
+        return {
+            "total": s.total,
+            "waiting": s.waiting,
+            "open": s.open,
+            "closed": s.closed,
+            "cancelled": s.cancelled,
+            "invalidated": s.invalidated,
+            "wins": s.wins,
+            "losses": s.losses,
+            "ambiguous": s.ambiguous,
+            "expired": s.expired,
+            "manual_close": s.manual_close,
+            "win_rate": _rate(s.win_rate),
+            "loss_rate": _rate(s.loss_rate),
+            "total_realized_r": s.total_realized_r,
+            "average_realized_r": s.average_realized_r,
+            "median_realized_r": s.median_realized_r,
+            "gross_positive_r": s.gross_positive_r,
+            "gross_negative_r": s.gross_negative_r,
+            "profit_factor": s.profit_factor,
+            "valid_r_count": s.valid_r_count,
+            "total_realized_pnl": _dec(s.total_realized_pnl),
+            "total_realized_pnl_float": _decf(s.total_realized_pnl),
+            "average_realized_pnl": _dec(s.average_realized_pnl),
+            "average_realized_pnl_float": _decf(s.average_realized_pnl),
+            "valid_pnl_count": s.valid_pnl_count,
+        }
+
+    breakdowns: list[dict[str, Any]] = []
+    for bd in analytics.breakdowns:
+        breakdowns.append(
+            {
+                "dimension": bd.dimension.value,
+                "groups": [
+                    {"key": g.key, "statistics": _stats(g.statistics)}
+                    for g in bd.groups
+                ],
+            }
+        )
+    return {
+        "analytics_id": analytics.analytics_id,
+        "trade_count": analytics.trade_count,
+        "label": analytics.label,
+        "metadata": [[k, v] for k, v in analytics.metadata],
+        "rationale": analytics.rationale,
+        "overall": _stats(analytics.overall),
+        "breakdowns": breakdowns,
+        "is_empty": analytics.is_empty,
+    }
+
+
 def _structure_short(point: Any) -> str:
     """Short label for a recent structure point (e.g. ``HH``)."""
 
@@ -1415,8 +1825,14 @@ def default_service(
     *,
     freshness_config: FreshnessConfig | None = None,
     symbol_map: dict[str, str] | None = None,
+    paper_trade_store: Any | None = None,
 ) -> DashboardAnalysisService:
-    """Build a dashboard service with sensible defaults."""
+    """Build a dashboard service with sensible defaults.
+
+    ``paper_trade_store`` is optional (Product Phase 5). When supplied,
+    paper trades are persisted and survive restarts; when ``None`` the
+    paper-trade service methods raise :class:`LookupError` on load.
+    """
 
     provider = make_provider(
         provider_name,
@@ -1430,6 +1846,7 @@ def default_service(
         provider=provider,
         evidence_source=evidence_source,
         freshness_config=freshness_config,
+        paper_trade_store=paper_trade_store,
     )
 
 
@@ -1439,6 +1856,9 @@ __all__ = [
     "DashboardAnalysisService",
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
+    "PaperTradeManualCloseRequest",
+    "PaperTradeRequest",
+    "PaperTradeTrackRequest",
     "ScanRequest",
     "TradePlanRequest",
     "WorkstationRequest",
