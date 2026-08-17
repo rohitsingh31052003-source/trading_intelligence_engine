@@ -133,6 +133,87 @@
 {# ---------------- SELECTED INSTRUMENT DETAIL (reused trade-review include) ---------------- #}
 {% include "_trade_review.html" %}
 
+{# ---------------- TRADE PLAN / RISK PLANNING (Product Phase 4) ---------------- #}
+<section class="card trade-plan-card">
+  <h2>Trade Plan / Risk Planning <span class="badge badge-{{ trade_plan.is_valid | lower }}">{{ trade_plan.risk_plan_status if trade_plan else 'not requested' }}</span></h2>
+  <p class="sm muted">
+    The trade plan is a <strong>deterministic risk calculation</strong> around the EXISTING trade geometry. It does
+    <strong>not</strong> predict, does <strong>not</strong> guarantee profitability, and does <strong>not</strong>
+    constitute a trading recommendation. Entry / stop / target / R:R are reused <strong>verbatim</strong> from the
+    Sprint 11R candidate; the plan never recomputes a second entry / stop / target and never invents Target 2. The
+    existing decision classification remains authoritative.
+  </p>
+  <form method="get" action="/workstation" class="selector-form trade-plan-form">
+    <input type="hidden" name="instrument" value="{{ selected_instrument }}">
+    <input type="hidden" name="timeframe" value="{{ selected_timeframe }}">
+    {% if instruments_param %}<input type="hidden" name="instruments" value="{{ instruments_param }}">{% endif %}
+    <label>
+      Account capital
+      <input type="text" name="account_capital" value="{{ account_capital }}" placeholder="e.g. 100000" inputmode="decimal">
+    </label>
+    <label>
+      Risk % per trade
+      <input type="text" name="risk_percent" value="{{ risk_percent }}" placeholder="e.g. 1" inputmode="decimal">
+    </label>
+    <button type="submit">Plan risk</button>
+  </form>
+
+  {% if trade_plan %}
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Plan ID</span><span class="value sm">{{ trade_plan.plan_id }}</span></div>
+    <div class="metric"><span class="label">Direction</span><span class="value {{ trade_plan.direction | lower }}">{{ trade_plan.direction or 'NONE' }}</span></div>
+    <div class="metric"><span class="label">Existing Decision</span><span class="value">{{ trade_plan.existing_decision or 'none' }}</span></div>
+    <div class="metric"><span class="label">Risk Plan Status</span><span class="value {{ 'ok' if trade_plan.is_valid else 'warn' }}">{{ trade_plan.risk_plan_status }}</span></div>
+  </div>
+
+  <h3 class="subhead">Account Risk</h3>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Account Capital</span><span class="value">{{ trade_plan.account_capital | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Risk per trade</span><span class="value">{{ trade_plan.risk_percent }}%</span></div>
+    <div class="metric"><span class="label">Maximum Risk</span><span class="value">{{ trade_plan.maximum_risk | fmt_money }}</span></div>
+  </div>
+
+  <h3 class="subhead">Trade Geometry (reused verbatim)</h3>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Entry</span><span class="value">{{ trade_plan.entry | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Stop</span><span class="value">{{ trade_plan.stop | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Target 1</span><span class="value">{{ trade_plan.target_1 | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Target 2</span><span class="value muted">Not supported</span></div>
+    <div class="metric"><span class="label">Engine Risk Distance</span><span class="value">{{ trade_plan.engine_risk_distance | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Engine Reward Distance</span><span class="value">{{ trade_plan.engine_reward_distance | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Engine R:R</span><span class="value">{{ trade_plan.engine_risk_reward_ratio | fmt_ratio }}</span></div>
+  </div>
+
+  <h3 class="subhead">Position Size</h3>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Quantity</span><span class="value">{{ trade_plan.quantity | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Quantity Status</span><span class="value">{{ trade_plan.quantity_status }}</span></div>
+    <div class="metric"><span class="label">Maximum Planned Loss</span><span class="value {{ 'warn' if trade_plan.planned_risk else 'muted' }}">{{ trade_plan.planned_risk | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Potential Planned Reward</span><span class="value">{{ trade_plan.planned_reward | fmt_money }}</span></div>
+    <div class="metric"><span class="label">Quantity Spec Available</span><span class="value">{{ trade_plan.quantity_spec_available }}</span></div>
+  </div>
+  {% if trade_plan.rationale %}
+  <p class="sm rationale"><strong>Rationale:</strong> {{ trade_plan.rationale }}</p>
+  {% endif %}
+  {% if trade_plan.warnings %}
+  <ul class="warnings">
+    {% for w in trade_plan.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  <p class="sm warn">
+    <strong>Maximum Planned Loss</strong> is the deterministic amount at risk if the stop is hit.
+    <strong>Potential Planned Reward</strong> is deterministic from quantity &times; reward distance; it is
+    <strong>not</strong> an expected return and <strong>not</strong> a prediction.
+  </p>
+  {% else %}
+  <p class="sm muted">
+    Enter your account capital and risk percentage above, then click <strong>Plan risk</strong> to compute a
+    deterministic position size from the existing trade geometry. The plan never modifies the existing decision or
+    geometry and never produces a BUY/SELL recommendation.
+  </p>
+  {% endif %}
+</section>
+
 {# ---------------- WHY IS THIS IN ITS CURRENT STATE? ---------------- #}
 <section class="card why-card">
   <h2>Why is this in its current state?</h2>

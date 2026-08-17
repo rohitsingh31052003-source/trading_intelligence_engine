@@ -10,13 +10,14 @@ trade-review workstation for discretionary trading research. The productization
 roadmap is: Product Phase 1 (live / near-live market-data integration) — COMPLETE;
 Product Phase 2 (multi-instrument scanner & watchlist) — COMPLETE;
 Product Phase 3 (live trading workstation / dashboard) — COMPLETE;
-Product Phase 4 (risk & trade planning) — FUTURE; Product Phase 5 (paper trading
+Product Phase 4 (risk & trade planning) — COMPLETE; Product Phase 5 (paper trading
 & real-world validation) — FUTURE.
 
 The architecture is DESCRIPTIVE ONLY: it provides technical-analysis and
 historical research context, does not guarantee future performance, and does not
 constitute a trading recommendation. No ML / probability model / broker /
-live-trading / order-execution / position-sizing is included.
+live-trading / order-execution / autonomous-trading is included; position sizing
+is a deterministic risk calculation around the existing trade geometry only.
 
 ## Run the dashboard
 
@@ -168,6 +169,90 @@ python -m uvicorn dashboard.app:app --reload
 The workstation is DESCRIPTIVE ONLY — it does not predict, does not guarantee
 profitability, and does not constitute a trading recommendation.
 
+## Risk & trade planning (Product Phase 4)
+
+The workstation has a **Trade Plan / Risk Planning** section and a REST endpoint
+`GET /api/trade-plan` that convert an EXISTING trade candidate / trade geometry
+into a disciplined, user-specific trade plan. The user supplies **account capital**
+and **risk percentage per trade**; the planner computes the deterministic position
+size from the existing engine geometry.
+
+```bash
+# In the workstation UI: enter account capital + risk %, click "Plan risk"
+# or call the API directly:
+curl "http://127.0.0.1:8000/api/trade-plan?instrument=NIFTY&timeframe=15m&account_capital=100000&risk_percent=1"
+```
+
+- **Purpose** — existing decision + existing trade geometry + user/account risk
+  parameters = structured trade plan. It answers *"if I choose to review/take this
+  existing candidate, how much should I risk and what position size follows from my
+  risk rules?"* It does **not** answer "will this trade definitely win?" and never
+  produces BUY/SELL/ENTER/EXIT/HOLD recommendations.
+- **Authoritative geometry** — entry / stop / target_1 / risk_distance /
+  reward_distance / risk_reward_ratio are reused **verbatim** from the Sprint 11R
+  `TradeCandidate`. The planner never recomputes a second entry / stop / target /
+  R:R and never invents Target 2 (`target_2 = None`, `target_2_supported = False`).
+- **Account risk vs engine risk (kept separate)** — ENGINE RISK = the candidate's
+  `risk_distance`; ACCOUNT RISK = `account_capital * risk_percent / 100` =
+  `maximum_risk`. The planner converts engine geometry into account-level risk; it
+  never modifies the underlying engine geometry.
+- **Risk calculation** — `maximum_risk = account_capital * risk_percent / 100`;
+  `quantity = maximum_risk / engine_risk_distance` (scaled by an optional contract
+  multiplier). When fractional quantities are disallowed the quantity is
+  **floor**-rounded to the largest integer whose `planned_risk = quantity *
+  engine_risk_distance` does **not** exceed `maximum_risk` — floor is the only
+  rounding mode that guarantees `planned_risk <= maximum_risk`. `planned_reward =
+  quantity * engine_reward_distance` is deterministic (NOT an expected return / not
+  a prediction).
+- **Quantity / lot handling** — the repository has no authoritative broker /
+  exchange contract metadata, so the planner uses a **safe generic** quantity model
+  by default (unit step, unit multiplier, fractional allowed). When no instrument
+  `QuantitySpec` is supplied the plan surfaces an explicit
+  `QUANTITY_SPEC_UNAVAILABLE` warning — no NSE lot size or broker-specific
+  contract rule is fabricated.
+- **Long / short symmetry** — direction is reused from the existing candidate
+  where available; risk is the absolute distance between entry and stop for **both**
+  directions, so long and short sizing are mathematically correct.
+- **Validation** — invalid capital (<=0), invalid risk % (<=0 / above the configured
+  maximum), missing geometry, zero / negative risk distance, NaN / infinity and
+  inconsistent candidate geometry become an `INVALID_INPUT` or
+  `GEOMETRY_UNAVAILABLE` / `RISK_LIMIT_EXCEEDED` plan — never a successful trade
+  plan. Invalid financial inputs are never silently repaired.
+- **Decision / actionability / evidence preserved** — the existing decision
+  classification (`REJECTED` / `WATCH` / `QUALIFIED` / `PREFERRED`) is reused
+  verbatim — never renamed to BUY/SELL, never upgraded / downgraded. The existing
+  actionability is reused verbatim. A separate `RiskPlanStatus`
+  (`VALID` / `INVALID_INPUT` / `GEOMETRY_UNAVAILABLE` / `RISK_LIMIT_EXCEEDED` /
+  `QUANTITY_UNAVAILABLE`) describes the risk plan, **not** the market decision.
+  Evidence is never used to calculate position size and never converted into a
+  risk percentage.
+- **No prediction** — the planner produces no probability / win-rate / AI
+  confidence / predictive score / expected return. `planned_reward` is
+  deterministic from `quantity * reward_distance` and is explicitly distinguished
+  from "expected return".
+- **Deterministic ID** — `plan_id = "plan-" + sha256[:16]` of the canonical
+  normalized inputs; repeated identical inputs produce identical ids, changing
+  capital or risk % changes the id. No random / wall-clock / memory-address
+  component.
+- **Serialization** — versioned canonical JSON
+  (`TRADE_PLAN_SCHEMA_VERSION = 1`); round-trips losslessly for every audit field;
+  rejects unsupported future schema versions with `ValueError`; no `pickle` /
+  `eval` / `exec`.
+- **No-look-ahead** — the planner consumes already-computed engine geometry only
+  and takes no candle / future-market-data argument; it never calls the Sprint 11W
+  `OutcomeEvaluator` and never runs the `HistoricalEvaluationPipeline` (verified by
+  patching both to raise). It uses the same completed-candle analysis as the
+  workstation.
+- **Numeric safety** — all financial math is done in `Decimal`; binary floating
+  point is never used for money. The rounding policy (`floor` only) is explicitly
+  documented and enforced.
+- **UI safety** — the UI contains no "BUY NOW" / "SELL NOW" / "EXECUTE" / "PLACE
+  ORDER" buttons; it uses terminology such as *Trade Plan*, *Risk Plan*, *Maximum
+  Planned Loss*, *Potential Planned Reward*.
+
+The trade plan is DESCRIPTIVE ONLY — it is a deterministic risk calculation, not a
+prediction or guarantee of future performance, and not a trading recommendation.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures
@@ -232,15 +317,17 @@ analysis (entry / stop / target / decision).
 
 ## What the dashboard does NOT do
 
-The dashboard (including the live trading workstation) is descriptive/contextual.
-It does **not** guarantee future performance, does **not** predict winning
-trades, does **not** claim high accuracy or guaranteed signals, and does
-**not** imply a "profitable strategy". It has no broker integration, no order
-placement, no live execution, no position sizing, and no portfolio management.
-There is no background polling / WebSocket streaming / autonomous trading. Risk
-& trade planning (Product Phase 4), paper trading & real-world validation
-(Product Phase 5), and broker integration / order execution are intentionally
-out of scope for the current phase.
+The dashboard (including the live trading workstation and the trade-plan /
+risk-planning layer) is descriptive/contextual. It does **not** guarantee future
+performance, does **not** predict winning trades, does **not** claim high accuracy
+or guaranteed signals, and does **not** imply a "profitable strategy". It has no
+broker integration, no order placement, no live execution, no autonomous trading,
+and no portfolio management. The trade-plan layer performs a deterministic
+position-sizing calculation around the existing trade geometry only — it does
+**not** generate BUY/SELL signals and is not a prediction. There is no background
+polling / WebSocket streaming / autonomous trading. Paper trading & real-world
+validation (Product Phase 5), and broker integration / order execution, are
+intentionally out of scope for the current phase.
 
 See `AGENTS.md` for the full architecture, the dashboard section, API routes,
 no-look-ahead guarantees, trade-geometry semantics and limitations.

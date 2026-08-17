@@ -34,12 +34,14 @@ from dashboard.services import (
     DashboardAnalysisService,
     EvidenceSource,
     ScanRequest,
+    TradePlanRequest,
     WorkstationRequest,
     default_service,
 )
 from dashboard.views import (
     scan_view_to_jsonable,
     to_jsonable,
+    trade_plan_view_to_jsonable,
     workstation_view_to_jsonable,
     workstation_why,
 )
@@ -73,6 +75,22 @@ def _register_filters(templates: Jinja2Templates) -> None:
     def fmt_r(value):
         return "unavailable" if value is None else f"{value:.2f}"
 
+    def fmt_money(value):
+        # Decimal-aware money formatter for the trade-plan section.
+        if value is None:
+            return "unavailable"
+        try:
+            from decimal import Decimal
+            if isinstance(value, Decimal):
+                q = Decimal(1).scaleb(-2)
+                return f"{value.quantize(q):,.2f}"
+        except Exception:  # pragma: no cover - defensive
+            pass
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
     def fmt_ts(value):
         if value is None:
             return "unavailable"
@@ -84,6 +102,7 @@ def _register_filters(templates: Jinja2Templates) -> None:
     env.filters["fmt_ratio"] = fmt_ratio
     env.filters["fmt_pct"] = fmt_pct
     env.filters["fmt_r"] = fmt_r
+    env.filters["fmt_money"] = fmt_money
     env.filters["fmt_ts"] = fmt_ts
 
 
@@ -317,13 +336,21 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
         instrument: str = "",
         timeframe: str = "15m",
         instruments: str = "",
+        account_capital: str = "",
+        risk_percent: str = "",
     ):
-        """Live trading workstation (Product Phase 3).
+        """Live trading workstation (Product Phase 3 + Phase 4 trade plan).
 
         Bundles the watchlist scan + the selected instrument's detailed
         trade review into one coherent view. Manual refresh only — no
         background polling. The analysis always uses the latest
         COMPLETED candle; no future candle is read.
+
+        Product Phase 4: when the user supplies ``account_capital`` and
+        ``risk_percent`` a deterministic RISK / TRADE PLAN is built from
+        the existing current analysis' trade geometry (reused verbatim).
+        The plan never modifies the existing decision / geometry and
+        never produces a BUY/SELL recommendation.
         """
 
         svc = _service()
@@ -346,6 +373,29 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
                 ),
                 wv.selected_view,
             )
+        # Build the optional risk / trade plan (Product Phase 4). Only
+        # when the user supplied both account_capital and risk_percent.
+        trade_plan_view = None
+        trade_plan_json = None
+        if (
+            wv.has_selected
+            and wv.selected_view is not None
+            and account_capital.strip()
+            and risk_percent.strip()
+        ):
+            try:
+                trade_plan_view = svc.plan_trade(
+                    TradePlanRequest(
+                        instrument=wv.selected_instrument,
+                        account_capital=account_capital.strip(),
+                        risk_percent=risk_percent.strip(),
+                        setup_timeframe=timeframe,
+                    ),
+                )
+                trade_plan_json = trade_plan_view_to_jsonable(trade_plan_view)
+            except Exception:  # noqa: BLE001 - failure isolation
+                trade_plan_view = None
+                trade_plan_json = None
         ctx = {
             "request": request,
             "timeframes": svc.available_timeframes(),
@@ -358,6 +408,10 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             "chart_json": _chart_to_dict(chart) if chart else None,
             "workstation_json": workstation_view_to_jsonable(wv),
             "workstation_why": _workstation_why_text(wv),
+            "account_capital": account_capital,
+            "risk_percent": risk_percent,
+            "trade_plan": trade_plan_view,
+            "trade_plan_json": trade_plan_json,
         }
         return templates.TemplateResponse(request, "workstation.html", ctx)
 
@@ -379,6 +433,39 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             ),
         )
         return workstation_view_to_jsonable(wv)
+
+    # ------------------------------------------------------------
+    # RISK / TRADE PLAN (Product Phase 4)
+    # ------------------------------------------------------------
+
+    @app.get("/api/trade-plan", response_class=JSONResponse)
+    def api_trade_plan(
+        instrument: str,
+        timeframe: str = "15m",
+        account_capital: str = "",
+        risk_percent: str = "",
+    ):
+        """Structured JSON for a risk / trade plan (Product Phase 4).
+
+        Accepts ``instrument``, ``timeframe``, ``account_capital`` and
+        ``risk_percent``. The plan reuses the EXISTING current analysis'
+        trade geometry verbatim; it never accepts arbitrary entry / stop
+        / target values (those would bypass the authoritative engine
+        geometry). All inputs are validated; invalid inputs become an
+        ``INVALID_INPUT`` plan (never a successful trade plan). The
+        response never contains a BUY/SELL recommendation.
+        """
+
+        svc = _service()
+        plan_view = svc.plan_trade(
+            TradePlanRequest(
+                instrument=instrument,
+                account_capital=account_capital,
+                risk_percent=risk_percent,
+                setup_timeframe=timeframe,
+            ),
+        )
+        return trade_plan_view_to_jsonable(plan_view)
 
     return app
 

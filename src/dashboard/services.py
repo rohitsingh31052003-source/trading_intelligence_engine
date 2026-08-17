@@ -42,17 +42,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Mapping
 
 from engine.config.market_scan_config import MarketScanConfig
+from engine.config.trade_plan_config import TradePlanConfig
 from engine.intelligence.market_scanner import (
     InstrumentDataset,
     MarketScanner,
     ScanEngines,
 )
+from engine.intelligence.trade_planning import TradePlanningEngine
 from engine.models.market_context import MarketContext
 from engine.models.market_scan import InstrumentScanResult, MTFAlignment
 from engine.models.ohlcv import OHLCVCandle
+from engine.models.trade_plan import TradePlan
 
 from dashboard.data_provider import (
     DashboardDataProvider,
@@ -75,6 +79,7 @@ from dashboard.views import (
     EvidenceView,
     GeometryView,
     MarketOverviewView,
+    TradePlanView,
     WatchlistRowView,
     WatchlistScanView,
     WorkstationView,
@@ -182,6 +187,57 @@ class WorkstationRequest:
 
 
 @dataclass(frozen=True)
+class TradePlanRequest:
+    """
+    A risk / trade-plan request (Product Phase 4).
+
+    The request pairs the existing current analysis (instrument + setup
+    timeframe) with user-supplied account-risk parameters. The planner
+    reuses the EXISTING current analysis' trade geometry verbatim; it
+    NEVER accepts arbitrary entry / stop / target values that would
+    bypass the authoritative engine geometry.
+
+    Attributes:
+
+    instrument
+        Canonical instrument name to plan for.
+
+    setup_timeframe
+        Dashboard setup (execution) timeframe label.
+
+    account_capital
+        User-supplied account capital. May be a number or a string; the
+        engine coerces to ``Decimal``. Must be positive.
+
+    risk_percent
+        User-supplied risk percentage per trade (e.g. ``1`` means 1%).
+        Must be strictly greater than zero and within the configured
+        ``[min_risk_percent, max_risk_percent]`` bounds.
+
+    context_timeframe
+        Optional explicit context (higher) timeframe.
+
+    quantity_spec
+        Optional instrument-specific
+        :class:`~engine.models.trade_plan.QuantitySpec`. When ``None`` the
+        safe generic default model is used and the plan surfaces
+        ``QUANTITY_SPEC_UNAVAILABLE``.
+
+    label / metadata
+        Optional identity / metadata carried onto the plan for audit.
+    """
+
+    instrument: str
+    account_capital: Any
+    risk_percent: Any
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+    quantity_spec: Any | None = None
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChartPayload:
     """
     Candlestick chart payload (backend-authored; the frontend renders
@@ -265,6 +321,11 @@ class DashboardAnalysisService:
         self.min_history = min_history
         self.staleness_seconds = staleness_seconds
         self.max_chart_candles = max_chart_candles
+        # Product Phase 4 — risk / trade planning engine. Reuses the
+        # existing current analysis' trade geometry verbatim; performs NO
+        # market analysis / decision / prediction. The existing decision
+        # and geometry remain AUTHORITATIVE.
+        self.trade_planning_engine = TradePlanningEngine(TradePlanConfig())
 
     # ------------------------------------------------------------
     # METADATA (for selectors)
@@ -669,6 +730,83 @@ class DashboardAnalysisService:
         """
 
         return Watchlist.default()
+
+    # ------------------------------------------------------------
+    # RISK / TRADE PLANNING (Product Phase 4)
+    # ------------------------------------------------------------
+
+    def plan_trade(self, request: TradePlanRequest) -> TradePlanView:
+        """
+        Build a risk / trade plan from the EXISTING current analysis'
+        trade geometry + user-supplied account-risk parameters.
+
+        This method ORCHESTRATES the existing single-instrument
+        :meth:`analyze` (which reuses the existing scanner + intelligence
+        pipeline) and then delegates the deterministic risk / position
+        sizing to the :class:`TradePlanningEngine`. It implements NO new
+        market-analysis, decision, scoring, geometry, evidence or
+        prediction logic — the trade geometry is reused VERBATIM from
+        the Sprint 11R ``TradeCandidate`` reached via the scan decision.
+
+        GUARANTEES (Product Phase 4):
+
+        * **Reuse-only**: reuses :meth:`analyze` (existing pipeline) +
+          the :class:`TradePlanningEngine` (deterministic calculation).
+          The existing decision classification is reused VERBATIM —
+          never renamed to BUY/SELL, never upgraded / downgraded.
+        * **Authoritative geometry**: entry / stop / target_1 /
+          risk_distance / reward_distance / risk_reward_ratio are reused
+          VERBATIM from the Sprint 11R candidate. The plan NEVER
+          recomputes a second entry / stop / target / R:R and NEVER
+          invents Target 2 (``target_2_supported = False``).
+        * **Completed-candle guarantee**: inherited from :meth:`analyze`
+          — the analysis uses the latest COMPLETED setup candle; a
+          forming candle is never fed to the engine and no future candle
+          is read.
+        * **No look-ahead**: this method accepts NO ``future`` /
+          ``future_candles`` argument; it never calls the Sprint 11W
+          outcome evaluator and never runs the historical pipeline
+          (inherited from :meth:`analyze` + the planning engine which
+          consumes already-computed geometry only).
+        * **No prediction**: the plan produces NO probability, NO
+          win-rate, NO AI confidence, NO predictive score, NO
+          BUY/SELL/ENTER/EXIT/HOLD recommendation. ``planned_reward`` is
+          deterministic from ``quantity * reward_distance`` and is
+          explicitly distinguished from an expected return.
+        * **Evidence separation**: evidence is NEVER used to calculate
+          position size and NEVER converted into a risk percentage.
+        * **Determinism**: identical inputs produce identical plan ids +
+          identical plans.
+
+        The result is DESCRIPTIVE ONLY. It does NOT guarantee future
+        performance and does NOT constitute a trading recommendation.
+        """
+
+        # Reuse the existing current analysis (completed-candle, no
+        # look-ahead). The view carries the authoritative geometry +
+        # decision + actionability reused verbatim.
+        view = self.analyze(
+            AnalysisRequest(
+                instrument=request.instrument,
+                setup_timeframe=request.setup_timeframe,
+                context_timeframe=request.context_timeframe,
+            ),
+        )
+        geom = view.geometry
+        plan = self.trade_planning_engine.plan(
+            instrument=request.instrument,
+            timeframe=request.setup_timeframe,
+            account_capital=request.account_capital,
+            risk_percent=request.risk_percent,
+            geometry=geom,
+            direction=geom.direction,
+            existing_decision=view.decision.decision_classification,
+            actionability=view.actionability.value,
+            quantity_spec=request.quantity_spec,
+            label=request.label,
+            metadata=dict(request.metadata) if request.metadata else None,
+        )
+        return _to_trade_plan_view(plan)
 
     def _scan_one(
         self,
@@ -1113,6 +1251,45 @@ def _scan_status_name(result: InstrumentScanResult) -> str:
     return "NO_OPPORTUNITY"
 
 
+def _to_trade_plan_view(plan: TradePlan) -> TradePlanView:
+    """Project a :class:`TradePlan` into a :class:`TradePlanView`.
+
+    Pure projection — every value is copied verbatim from the plan model.
+    No value is recomputed; no decision / geometry semantics are
+    duplicated. Used by :meth:`DashboardAnalysisService.plan_trade`.
+    """
+
+    return TradePlanView(
+        plan_id=plan.plan_id,
+        instrument=plan.instrument,
+        timeframe=plan.timeframe,
+        direction=plan.direction,
+        existing_decision=plan.existing_decision,
+        actionability=plan.actionability,
+        account_capital=plan.account_capital,
+        risk_percent=plan.risk_percent,
+        maximum_risk=plan.maximum_risk,
+        entry=plan.entry,
+        stop=plan.stop,
+        target_1=plan.target_1,
+        target_2=plan.target_2,
+        target_2_supported=plan.target_2_supported,
+        engine_risk_distance=plan.engine_risk_distance,
+        engine_reward_distance=plan.engine_reward_distance,
+        engine_risk_reward_ratio=plan.engine_risk_reward_ratio,
+        quantity=plan.quantity,
+        planned_risk=plan.planned_risk,
+        planned_reward=plan.planned_reward,
+        quantity_status=plan.quantity_status.value,
+        risk_plan_status=plan.risk_plan_status.value,
+        quantity_spec_available=plan.quantity_spec_available,
+        warnings=plan.warnings,
+        rationale=plan.rationale,
+        label=plan.label,
+        metadata=plan.metadata,
+    )
+
+
 def _structure_short(point: Any) -> str:
     """Short label for a recent structure point (e.g. ``HH``)."""
 
@@ -1263,6 +1440,7 @@ __all__ = [
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
     "ScanRequest",
+    "TradePlanRequest",
     "WorkstationRequest",
     "default_service",
 ]

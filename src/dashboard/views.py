@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 
@@ -1279,6 +1280,142 @@ def workstation_view_to_jsonable(view: WorkstationView) -> dict[str, Any]:
     }
 
 
+# ============================================================
+# TRADE PLAN VIEW (Product Phase 4 — risk & trade planning)
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class TradePlanView:
+    """
+    Presentation view of a risk / trade plan (Product Phase 4).
+
+    This is a READ-ONLY presentation projection of an already-computed
+    :class:`~engine.models.trade_plan.TradePlan`. It implements NO
+    calculation, NO prediction, NO recommendation. Every value is either
+    an OBSERVED value copied verbatim from the plan model (account
+    capital, risk %, maximum risk, entry / stop / target, engine risk /
+    reward / R:R, quantity, planned risk / reward, status) or a DERIVED
+    presentation value (the formatted strings).
+
+    The view separates the same concerns the plan keeps separate:
+    ACCOUNT RISK, TRADE GEOMETRY (reused verbatim from the Sprint 11R
+    candidate), POSITION SIZE, STATUS. It NEVER collapses them into one
+    signal / score. It NEVER renames the existing decision to BUY/SELL
+    and NEVER upgrades / downgrades it. Target 2 remains ``None`` with
+    ``target_2_supported = False``.
+
+    Attributes are thin projections of the plan model fields; see
+    :class:`~engine.models.trade_plan.TradePlan` for the authoritative
+    semantics.
+    """
+
+    plan_id: str = ""
+    instrument: str = ""
+    timeframe: str = ""
+    direction: str = ""
+    existing_decision: str = ""
+    actionability: str = ""
+    account_capital: Decimal | None = None
+    risk_percent: Decimal | None = None
+    maximum_risk: Decimal | None = None
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    target_1: Decimal | None = None
+    target_2: Decimal | None = None
+    target_2_supported: bool = False
+    engine_risk_distance: Decimal | None = None
+    engine_reward_distance: Decimal | None = None
+    engine_risk_reward_ratio: Decimal | None = None
+    quantity: Decimal | None = None
+    planned_risk: Decimal | None = None
+    planned_reward: Decimal | None = None
+    quantity_status: str = "UNSIZED"
+    risk_plan_status: str = "GEOMETRY_UNAVAILABLE"
+    quantity_spec_available: bool = False
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+    rationale: str = ""
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    @property
+    def is_valid(self) -> bool:
+        """Whether the risk plan produced a usable, sized position."""
+
+        return self.risk_plan_status == "VALID"
+
+    @property
+    def has_geometry(self) -> bool:
+        """Whether the engine geometry entry/stop (risk) is available."""
+
+        return (
+            self.entry is not None
+            and self.stop is not None
+            and self.engine_risk_distance is not None
+            and self.engine_risk_distance > 0
+        )
+
+
+def trade_plan_view_to_jsonable(view: TradePlanView) -> dict[str, Any]:
+    """Convert a :class:`TradePlanView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. ``Decimal`` values are rendered
+    as their string form so monetary precision survives the JSON round
+    trip; a parallel ``_float`` field is included for convenience
+    consumers. No value is recomputed.
+    """
+
+    def _dec(d: Decimal | None) -> str | None:
+        return None if d is None else str(d)
+
+    def _decf(d: Decimal | None) -> float | None:
+        return None if d is None else float(d)
+
+    return {
+        "plan_id": view.plan_id,
+        "instrument": view.instrument,
+        "timeframe": view.timeframe,
+        "direction": view.direction,
+        "existing_decision": view.existing_decision,
+        "actionability": view.actionability,
+        "account_capital": _dec(view.account_capital),
+        "account_capital_float": _decf(view.account_capital),
+        "risk_percent": _dec(view.risk_percent),
+        "risk_percent_float": _decf(view.risk_percent),
+        "maximum_risk": _dec(view.maximum_risk),
+        "maximum_risk_float": _decf(view.maximum_risk),
+        "entry": _dec(view.entry),
+        "entry_float": _decf(view.entry),
+        "stop": _dec(view.stop),
+        "stop_float": _decf(view.stop),
+        "target_1": _dec(view.target_1),
+        "target_1_float": _decf(view.target_1),
+        "target_2": _dec(view.target_2),
+        "target_2_supported": view.target_2_supported,
+        "engine_risk_distance": _dec(view.engine_risk_distance),
+        "engine_risk_distance_float": _decf(view.engine_risk_distance),
+        "engine_reward_distance": _dec(view.engine_reward_distance),
+        "engine_reward_distance_float": _decf(view.engine_reward_distance),
+        "engine_risk_reward_ratio": _dec(view.engine_risk_reward_ratio),
+        "engine_risk_reward_ratio_float": _decf(view.engine_risk_reward_ratio),
+        "quantity": _dec(view.quantity),
+        "quantity_float": _decf(view.quantity),
+        "planned_risk": _dec(view.planned_risk),
+        "planned_risk_float": _decf(view.planned_risk),
+        "planned_reward": _dec(view.planned_reward),
+        "planned_reward_float": _decf(view.planned_reward),
+        "quantity_status": view.quantity_status,
+        "risk_plan_status": view.risk_plan_status,
+        "quantity_spec_available": view.quantity_spec_available,
+        "warnings": list(view.warnings),
+        "rationale": view.rationale,
+        "label": view.label,
+        "metadata": [[k, v] for k, v in view.metadata],
+        "is_valid": view.is_valid,
+        "has_geometry": view.has_geometry,
+    }
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -1288,6 +1425,7 @@ __all__ = [
     "EvidenceView",
     "GeometryView",
     "MarketOverviewView",
+    "TradePlanView",
     "WatchlistRowView",
     "WatchlistScanView",
     "WorkstationView",
@@ -1296,6 +1434,7 @@ __all__ = [
     "scan_view_to_jsonable",
     "scanner_rank_key",
     "to_jsonable",
+    "trade_plan_view_to_jsonable",
     "workstation_why",
     "workstation_view_to_jsonable",
 ]
