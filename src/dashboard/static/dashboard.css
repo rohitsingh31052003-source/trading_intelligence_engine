@@ -178,3 +178,33 @@ body {
 .decision-rejected { color: var(--red); }
 .long { color: var(--green); }
 .short { color: var(--red); }
+
+/* ============================================================
+   LIVE TRADING WORKSTATION (Product Phase 3)
+   ============================================================ */
+.workstation-controls { border-left: 4px solid var(--accent); }
+.workstation-head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.workstation-title { margin: 0; font-size: 1.4rem; font-weight: 700; }
+.workstation-controls .selector-form { align-items: flex-end; }
+
+.selected-instrument { border-left: 4px solid var(--accent); }
+.row-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.scanner-table tr.row-selected { background: rgba(88,166,255,0.10); }
+
+.why-card { border-left: 4px solid var(--purple); }
+.why-text { font-size: 0.95rem; margin: 4px 0 8px; }
+
+.nav-card { display: flex; gap: 18px; flex-wrap: wrap; }
+.nav-card a {
+  color: var(--accent); text-decoration: none; font-size: 0.9rem; font-weight: 600;
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-2);
+}
+.nav-card a:hover { border-color: var(--accent); }
+
+@media (max-width: 760px) {
+  .workstation-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .nav-card { flex-direction: column; }
+}

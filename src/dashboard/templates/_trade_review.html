@@ -1,0 +1,243 @@
+{# Reusable trade-review detail sections (Product Phase 3).
+
+   This include renders the SINGLE-INSTRUMENT trade-review detail from a
+   `view` (DashboardTradeView). It is shared by the trade-review page
+   (`/`, dashboard.html) and the live trading workstation
+   (`/workstation`, workstation.html) so the detail markup has ONE
+   source of truth.
+
+   Required context:
+     - view            : DashboardTradeView (or None)
+     - chart_json      : JSON-serializable chart payload (or None)
+     - selected_instrument : str
+     - selected_timeframe  : str
+
+   The include implements NO intelligence. Every value is reused
+   verbatim from the existing engine outputs. It does NOT rename the
+   decision to BUY/SELL, does NOT recompute geometry in the frontend,
+   and does NOT fabricate evidence. #}
+{% if view %}
+
+{# ---------------- DATA SOURCE / FRESHNESS (Product Phase 1) ---------------- #}
+<section class="card">
+  <h2>Data Source <span class="badge">{{ view.data_source.data_source or 'unavailable' }}</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Data Source</span><span class="value">{{ view.data_source.data_source or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Provider Status</span><span class="value {{ view.data_source.provider_status | lower }}">{{ view.data_source.provider_status or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Freshness</span><span class="value {{ 'warn' if view.data_source.freshness_state == 'STALE' else ('ok' if view.data_source.freshness_state == 'CURRENT' else 'muted') }}">{{ view.data_source.freshness_state or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Forming Candle</span><span class="value {{ 'warn' if view.data_source.forming_candle_present else 'ok' }}">{{ 'IN PROGRESS (not used)' if view.data_source.forming_candle_present else 'none' }}</span></div>
+    <div class="metric"><span class="label">Latest Completed Candle</span><span class="value sm">{{ view.data_source.latest_completed_candle_timestamp | fmt_ts }}</span></div>
+    <div class="metric"><span class="label">Latest Provider Candle</span><span class="value sm">{{ view.data_source.latest_candle_timestamp | fmt_ts }}</span></div>
+    <div class="metric"><span class="label">Last Successful Fetch</span><span class="value sm">{{ view.data_source.last_successful_fetch_time | fmt_ts }}</span></div>
+    <div class="metric"><span class="label">Rejected Future Candles</span><span class="value {{ 'warn' if view.data_source.rejected_future_count else 'ok' }}">{{ view.data_source.rejected_future_count }}</span></div>
+  </div>
+  <p class="sm muted">
+    Freshness is <strong>data quality / product state only</strong> &mdash; it never alters the
+    intelligence engine's decision. The analysis always uses the latest <strong>COMPLETED</strong>
+    candle; a forming / in-progress candle is never fed to the engine, and future-dated candles are
+    rejected. No stale data is substituted for current data.
+  </p>
+</section>
+
+{# ---------------- ACTIONABILITY (top, the headline state) ---------------- #}
+<section class="card actionability-card actionability-{{ view.actionability.value | lower }}">
+  <div class="actionability-head">
+    <span class="actionability-label">Actionability</span>
+    <span class="actionability-state">{{ view.actionability.value }}</span>
+  </div>
+  <p class="actionability-reason">{{ view.actionability_detail.reason }}</p>
+  <p class="sm muted">
+    Actionability is a <em>deterministic presentation mirror</em> of the existing decision
+    classification + opportunity status + trade-geometry completeness + evidence strength.
+    It is <strong>not</strong> a predictive score, not a probability, and not a BUY/SELL/ENTER/EXIT/HOLD
+    recommendation. Mapping: incomplete/no-decision &rarr; INVALID; NO_OPPORTUNITY/REJECTED &rarr;
+    NO_OPPORTUNITY; eligible but incomplete geometry &rarr; TRADE_GEOMETRY_UNAVAILABLE; complete
+    geometry + INSUFFICIENT evidence &rarr; INSUFFICIENT_EVIDENCE; qualified/preferred + complete
+    geometry + non-insufficient evidence &rarr; READY_FOR_REVIEW; otherwise WATCH.
+  </p>
+</section>
+
+{# ---------------- MARKET OVERVIEW ---------------- #}
+<section class="card">
+  <h2>Market Overview <span class="badge badge-{{ view.complete | lower }}">{{ 'COMPLETE' if view.complete else 'INCOMPLETE' }}</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Last Price</span><span class="value">{{ view.market_overview.last_price | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Latest Candle</span><span class="value sm">{{ view.market_overview.latest_candle_timestamp | fmt_ts }}</span></div>
+    <div class="metric"><span class="label">HTF Trend</span><span class="value">{{ view.market_overview.htf_trend }}</span></div>
+    <div class="metric"><span class="label">LTF Trend</span><span class="value">{{ view.market_overview.ltf_trend }}</span></div>
+    <div class="metric"><span class="label">Range State</span><span class="value">{{ view.market_overview.range_state }}</span></div>
+    <div class="metric"><span class="label">MTF Alignment</span><span class="value {{ view.market_overview.mtf_alignment | lower }}">{{ view.market_overview.mtf_alignment }}</span></div>
+    <div class="metric"><span class="label">Price Location</span><span class="value">{{ view.market_overview.price_location }}</span></div>
+    <div class="metric"><span class="label">Confirmed Swings</span><span class="value">{{ view.market_overview.confirmed_swings }}</span></div>
+    <div class="metric"><span class="label">Support</span><span class="value">{{ view.market_overview.support | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Resistance</span><span class="value">{{ view.market_overview.resistance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Recent Structure</span><span class="value sm">{{ view.market_overview.recent_structure or 'insufficient' }}</span></div>
+    <div class="metric"><span class="label">Data Stale</span><span class="value {{ 'warn' if view.market_overview.data_stale else 'ok' }}">{{ 'YES' if view.market_overview.data_stale else 'NO' }}</span></div>
+  </div>
+  {% if view.market_overview.data_stale %}
+  <p class="warn">Latest candle appears stale relative to the configured staleness threshold.</p>
+  {% endif %}
+</section>
+
+{# ---------------- DECISION (authoritative) ---------------- #}
+<section class="card">
+  <h2>Decision <span class="muted">(authoritative &mdash; not renamed to BUY/SELL)</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Classification</span><span class="value">{{ view.decision.decision_classification or 'none' }}</span></div>
+    <div class="metric"><span class="label">Score</span><span class="value">{{ view.decision.decision_score }}/100</span></div>
+    <div class="metric"><span class="label">Opportunity</span><span class="value">{{ view.decision.opportunity_status or 'none' }}</span></div>
+    <div class="metric"><span class="label">Rank</span><span class="value">{{ view.decision.rank }}</span></div>
+    <div class="metric"><span class="label">Eligible</span><span class="value">{{ view.decision.eligible }}</span></div>
+    <div class="metric"><span class="label">Confluence</span><span class="value">{{ view.decision.confluence_score }}/5</span></div>
+  </div>
+  <p class="sm rationale"><strong>Rationale:</strong> {{ view.decision.rationale }}</p>
+  <p class="sm muted">
+    Decision classification is generated by the existing Sprint 11S decision architecture and
+    remains authoritative. The decision score is a descriptive evidence-strength / completeness
+    total in [0,100], NOT a probability. It is never renamed into BUY/SELL.
+  </p>
+</section>
+
+{# ---------------- TRADE GEOMETRY ---------------- #}
+<section class="card trade-panel {{ 'panel-actionable' if view.has_actionable_geometry else 'panel-watch' }}">
+  <h2>Trade Geometry <span class="badge badge-{{ view.geometry.geometry_available | lower }}">{{ 'COMPLETE' if view.geometry.geometry_available else 'INCOMPLETE' }}</span></h2>
+
+  {% if view.geometry.geometry_available %}
+  <div class="grid grid-3">
+    <div class="metric"><span class="label">Direction</span><span class="value {{ view.geometry.direction | lower }}">{{ view.geometry.direction }}</span></div>
+    <div class="metric"><span class="label">Setup Type</span><span class="value">{{ view.setup_type or 'none' }}</span></div>
+    <div class="metric"><span class="label">Geometry</span><span class="value ok">COMPLETE</span></div>
+    <div class="metric"><span class="label">Entry</span><span class="value">{{ view.geometry.entry | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Stop / Invalidation</span><span class="value">{{ view.geometry.stop | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Target 1</span><span class="value">{{ view.geometry.target_1 | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Risk</span><span class="value">{{ view.geometry.risk_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Reward</span><span class="value">{{ view.geometry.reward_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Risk / Reward</span><span class="value">{{ view.geometry.risk_reward_ratio | fmt_ratio }}R</span></div>
+    <div class="metric"><span class="label">Invalidation Level</span><span class="value">{{ view.geometry.invalidation_level | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Target 2</span><span class="value muted">Not supported by current architecture</span></div>
+    <div class="metric rr-bar-cell">
+      <span class="label">R:R Visual</span>
+      <div class="rr-bar">
+        <div class="rr-risk" style="flex: {{ view.geometry.risk_distance or 1 }};"></div>
+        <div class="rr-reward" style="flex: {{ view.geometry.reward_distance or 1 }};"></div>
+      </div>
+      <span class="value sm">risk : reward = {{ view.geometry.risk_distance | fmt_price }} : {{ view.geometry.reward_distance | fmt_price }}</span>
+    </div>
+  </div>
+  {% else %}
+  <div class="no-trade">
+    <h3>TRADE GEOMETRY UNAVAILABLE</h3>
+    <p>
+      The existing engine did not produce complete trade geometry (entry / stop / target) at this
+      point. This is reported honestly &mdash; no entry, stop or target is fabricated to make the
+      panel look complete.
+    </p>
+    {% if view.geometry.entry or view.geometry.stop or view.geometry.target_1 %}
+    <p class="sm">
+      Partial references available:
+      direction={{ view.geometry.direction or 'NONE' }},
+      entry={{ view.geometry.entry | fmt_price }},
+      stop={{ view.geometry.stop | fmt_price }},
+      target_1={{ view.geometry.target_1 | fmt_price }}.
+    </p>
+    {% endif %}
+  </div>
+  <div class="grid grid-3">
+    <div class="metric"><span class="label">Direction</span><span class="value {{ view.geometry.direction | lower }}">{{ view.geometry.direction or 'NONE' }}</span></div>
+    <div class="metric"><span class="label">Setup Type</span><span class="value">{{ view.setup_type or 'none' }}</span></div>
+    <div class="metric"><span class="label">Geometry</span><span class="value warn">INCOMPLETE</span></div>
+    <div class="metric"><span class="label">Entry</span><span class="value">{{ view.geometry.entry | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Stop / Invalidation</span><span class="value">{{ view.geometry.stop | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Target 1</span><span class="value">{{ view.geometry.target_1 | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Risk</span><span class="value">{{ view.geometry.risk_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Reward</span><span class="value">{{ view.geometry.reward_distance | fmt_price }}</span></div>
+    <div class="metric"><span class="label">Risk / Reward</span><span class="value">{{ view.geometry.risk_reward_ratio | fmt_ratio }}</span></div>
+    <div class="metric"><span class="label">Target 2</span><span class="value muted">Not supported</span></div>
+  </div>
+  {% endif %}
+
+  <p class="sm muted">
+    Entry / stop / target / risk / reward / R:R are reused <strong>verbatim</strong> from the
+    Sprint 11R trade candidate (reached via the scan decision). The invalidation level IS the
+    stop. Target 2 is not part of the architecture and is never invented. No R:R is recomputed
+    in the frontend.
+  </p>
+  <p class="sm rationale"><strong>Scan reason:</strong> {{ view.reason }}</p>
+</section>
+
+{# ---------------- EVIDENCE ---------------- #}
+<section class="card">
+  <h2>Evidence</h2>
+  {% if view.evidence.available %}
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Evidence Strength</span><span class="value {{ view.evidence.evidence_strength | lower }}">{{ view.evidence.evidence_strength }}</span></div>
+    <div class="metric"><span class="label">Strategy Interpretation</span><span class="value">{{ view.evidence.strategy_interpretation }}</span></div>
+    <div class="metric"><span class="label">Cohort</span><span class="value sm">{{ view.evidence.cohort_key }}</span></div>
+    <div class="metric"><span class="label">Sample Size</span><span class="value">{{ view.evidence.sample_size }}</span></div>
+    <div class="metric"><span class="label">Win Rate</span><span class="value">{{ view.evidence.win_rate | fmt_pct }}</span></div>
+    <div class="metric"><span class="label">Avg Realized R</span><span class="value">{{ view.evidence.avg_realized_r | fmt_r }}</span></div>
+    <div class="metric"><span class="label">Profit Factor</span><span class="value">{{ view.evidence.profit_factor | fmt_r }}</span></div>
+  </div>
+  {% if view.evidence.evidence_strength == 'INSUFFICIENT' %}
+  <p class="warn">
+    Evidence is INSUFFICIENT (sample below the configured minimum). Observed metrics are NOT
+    reliable evidence and must not be treated as such.
+  </p>
+  {% endif %}
+  {% else %}
+  <div class="no-trade">
+    <h3>EVIDENCE UNAVAILABLE</h3>
+    <p>No offline historical evidence corpus is attached. No strength, win rate or sample size
+    is fabricated. Attach an offline Sprint 11Y evidence report to enable this section.</p>
+  </div>
+  {% endif %}
+  <p class="sm rationale"><strong>Limitations:</strong> {{ view.evidence.limitations }}</p>
+  <p class="sm muted">
+    Observed historical result and evidence strength are kept <strong>separate</strong> and are
+    never merged into a single &ldquo;confidence score&rdquo;. A 1-trade 100% winner is never
+    presented as strong evidence (sample-size hard gate).
+  </p>
+</section>
+
+{# ---------------- SETUP DETAILS ---------------- #}
+<section class="card">
+  <h2>Setup Details</h2>
+  <ul class="explanation">
+    <li><strong>Instrument:</strong> {{ view.instrument }} ({{ view.context_timeframe }} context / {{ view.setup_timeframe }} setup)</li>
+    <li><strong>Setup type:</strong> {{ view.setup_type or 'none' }}</li>
+    <li><strong>Direction:</strong> {{ view.geometry.direction or 'NONE' }}</li>
+    <li><strong>Market structure:</strong> {{ view.market_overview.recent_structure or 'insufficient' }} ({{ view.market_overview.ltf_trend }})</li>
+    <li><strong>HTF trend:</strong> {{ view.market_overview.htf_trend }}</li>
+    <li><strong>MTF alignment:</strong> {{ view.market_overview.mtf_alignment }}</li>
+    <li><strong>Price location:</strong> {{ view.market_overview.price_location }}</li>
+    <li><strong>Confluence:</strong> {{ view.decision.confluence_score }}/5 sources aligned</li>
+    <li><strong>Decision:</strong> {{ view.decision.decision_classification }} (score {{ view.decision.decision_score }})</li>
+    <li><strong>Evidence:</strong> {{ view.evidence.evidence_strength }}</li>
+    <li><strong>Invalidation:</strong> {{ view.geometry.invalidation_level | fmt_price }} (== stop loss)</li>
+  </ul>
+</section>
+
+{# ---------------- CHART ---------------- #}
+<section class="card">
+  <h2>Chart &mdash; {{ selected_instrument }} {{ selected_timeframe }}</h2>
+  <div id="chart-container" data-payload='{{ chart_json | tojson }}' data-geom-available='{{ view.geometry.geometry_available }}'></div>
+  <p class="sm muted">
+    Candlesticks + overlaid levels (entry / stop / target / support / resistance / invalidation)
+    come only from backend engine output. The latest COMPLETED analysis candle is highlighted.
+    The frontend never invents technical levels and never recomputes R:R.
+  </p>
+</section>
+
+{# ---------------- WARNINGS ---------------- #}
+{% if view.warnings %}
+<section class="card">
+  <h2>Warnings &amp; Limitations</h2>
+  <ul class="warnings">
+    {% for w in view.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% else %}
+<section class="card"><p>No analysis is available for the selected instrument / timeframe. Select an instrument and timeframe, then refresh.</p></section>
+{% endif %}

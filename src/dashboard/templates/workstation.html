@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Trading Workstation &mdash; Trading Intelligence Dashboard{% endblock %}
+{% block content %}
+
+{# ---------------- WORKSTATION TOP CONTROLS ---------------- #}
+<section class="card selector workstation-controls">
+  <div class="workstation-head">
+    <h1 class="workstation-title">Trading Workstation</h1>
+    <span class="badge">{{ workstation.selected_instrument or 'none' }}</span>
+    <span class="badge badge-{{ workstation.has_selected | lower }}">{{ 'detail' if workstation.has_selected else 'no selection' }}</span>
+  </div>
+  <form method="get" action="/workstation" class="selector-form">
+    <label>
+      Timeframe
+      <select name="timeframe">
+        {% for tf in timeframes %}
+        <option value="{{ tf }}" {% if tf == selected_timeframe %}selected{% endif %}>{{ tf }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Watchlist (comma-separated, optional)
+      <input type="text" name="instruments" value="{{ instruments_param }}" placeholder="e.g. NIFTY,RELIANCE,TCS">
+    </label>
+    <label>
+      Focus instrument (optional)
+      <input type="text" name="instrument" value="{{ selected_instrument }}" placeholder="e.g. NIFTY">
+    </label>
+    <button type="submit" name="refresh" value="1">Refresh</button>
+  </form>
+  <p class="hint">
+    The workstation monitors the watchlist and inspects one selected instrument. The scan uses the
+    EXISTING intelligence pipeline; every per-row value (decision, actionability, geometry,
+    evidence, freshness) is reused verbatim &mdash; no new score, no prediction. Rows are ordered by a
+    fixed <strong>presentational</strong> key, <strong>not</strong> a predictive ranking. The
+    analysis always uses the latest <strong>COMPLETED</strong> candle; a forming candle is never fed
+    to the engine. <strong>Refresh is a deliberate manual action</strong> &mdash; there is no background
+    polling and no WebSocket streaming.
+  </p>
+</section>
+
+{% if workstation %}
+
+{# ---------------- MARKET / WATCHLIST STATUS ---------------- #}
+<section class="card">
+  <h2>Market / Watchlist Status <span class="badge">{{ workstation.setup_timeframe }} / {{ workstation.context_timeframe or 'unavailable' }}</span></h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Setup Timeframe</span><span class="value">{{ workstation.setup_timeframe }}</span></div>
+    <div class="metric"><span class="label">Context Timeframe</span><span class="value">{{ workstation.context_timeframe or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Watchlist</span><span class="value">{{ workstation.scan.total }}</span></div>
+    <div class="metric"><span class="label">Ready for Review</span><span class="value">{{ workstation.scan.actionable_count }}</span></div>
+    <div class="metric"><span class="label">Analyzed</span><span class="value ok">{{ workstation.scan.analyzed }}</span></div>
+    <div class="metric"><span class="label">Errored</span><span class="value {{ 'warn' if workstation.scan.errored else 'ok' }}">{{ workstation.scan.errored }}</span></div>
+    <div class="metric"><span class="label">Refresh Token</span><span class="value sm">{{ workstation.refresh_token or 'unavailable' }}</span></div>
+  </div>
+  {% if workstation.scan.is_empty %}
+  <p>The watchlist is empty. Add instruments above and click Refresh.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table class="scanner-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Instrument</th>
+          <th>Data</th>
+          <th>Fresh</th>
+          <th>Decision</th>
+          <th>Actionability</th>
+          <th>Evidence</th>
+          <th>Setup</th>
+          <th>Dir</th>
+          <th>Geom</th>
+          <th>Entry</th>
+          <th>Stop</th>
+          <th>Target 1</th>
+          <th>R:R</th>
+          <th>Review</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in workstation.scan.rows %}
+        <tr class="actionability-{{ row.actionability.value | lower }} {% if row.instrument == selected_instrument %}row-selected{% endif %}">
+          <td>{{ row.rank }}</td>
+          <td class="inst">{{ row.instrument }}</td>
+          <td>{{ row.view.data_source.data_source or 'unavailable' }}</td>
+          <td class="{{ 'warn' if row.freshness_state == 'STALE' else ('muted' if row.freshness_state in ('UNAVAILABLE','INVALID') else 'ok') }}">{{ row.freshness_state }}</td>
+          <td class="decision-{{ (row.decision_classification or 'none') | lower }}">{{ row.decision_classification or 'none' }}</td>
+          <td>{{ row.actionability.value }}</td>
+          <td class="{{ 'warn' if row.evidence_strength == 'INSUFFICIENT' else ('muted' if row.evidence_strength in ('UNAVAILABLE',) else '') }}">{{ row.evidence_strength }}</td>
+          <td>{{ row.setup_type or 'none' }}</td>
+          <td class="{{ (row.direction or 'none') | lower }}">{{ row.direction or 'NONE' }}</td>
+          <td class="{{ 'ok' if row.geometry_available else 'warn' }}">{{ 'YES' if row.geometry_available else 'NO' }}</td>
+          <td>{{ row.entry | fmt_price }}</td>
+          <td>{{ row.stop | fmt_price }}</td>
+          <td>{{ row.target_1 | fmt_price }}</td>
+          <td>{{ row.risk_reward_ratio | fmt_ratio }}</td>
+          <td><a href="/workstation?instrument={{ row.instrument }}&amp;timeframe={{ workstation.setup_timeframe }}{% if instruments_param %}&amp;instruments={{ instruments_param }}{% endif %}">focus</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <p class="sm muted">
+    Decision classification is the AUTHORITATIVE existing Sprint 11S output (REJECTED / WATCH /
+    QUALIFIED / PREFERRED), reused verbatim &mdash; never renamed to BUY/SELL, never upgraded or
+    downgraded. Entry / stop / target / R:R are reused verbatim from the Sprint 11R trade candidate.
+    Target 2 is not supported by the architecture. The row order is <strong>presentational</strong>,
+    not a predictive ranking; direction (LONG/SHORT) is deliberately not a ranking key. Freshness is
+    data quality only and never alters the decision. One instrument failing never aborts the scan.
+  </p>
+</section>
+
+{# ---------------- SELECTED INSTRUMENT ---------------- #}
+<section class="card selected-instrument">
+  <h2>Selected Instrument &mdash; {{ selected_instrument or 'none' }} &middot; {{ selected_timeframe }}</h2>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Instrument</span><span class="value">{{ selected_instrument or 'none' }}</span></div>
+    <div class="metric"><span class="label">Setup Timeframe</span><span class="value">{{ workstation.setup_timeframe }}</span></div>
+    <div class="metric"><span class="label">Context Timeframe</span><span class="value">{{ workstation.context_timeframe or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Provider</span><span class="value">{{ view.data_source.data_source if view else 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Freshness</span><span class="value {{ 'warn' if (view and view.data_source.freshness_state == 'STALE') else ('ok' if (view and view.data_source.freshness_state == 'CURRENT') else 'muted') }}">{{ view.data_source.freshness_state if view else 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Latest Completed Candle</span><span class="value sm">{{ view.data_source.latest_completed_candle_timestamp | fmt_ts if view else 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Forming Candle</span><span class="value {{ 'warn' if (view and view.data_source.forming_candle_present) else 'ok' }}">{{ 'IN PROGRESS (not used)' if (view and view.data_source.forming_candle_present) else 'none' }}</span></div>
+    <div class="metric"><span class="label">Rejected Future Candles</span><span class="value {{ 'warn' if (view and view.data_source.rejected_future_count) else 'ok' }}">{{ view.data_source.rejected_future_count if view else 0 }}</span></div>
+  </div>
+  <p class="sm muted">
+    The analysis is anchored to the latest <strong>COMPLETED</strong> setup candle; a forming candle
+    is shown for display only and is never fed to the engine. Future-dated candles are rejected.
+  </p>
+</section>
+
+{# ---------------- SELECTED INSTRUMENT DETAIL (reused trade-review include) ---------------- #}
+{% include "_trade_review.html" %}
+
+{# ---------------- WHY IS THIS IN ITS CURRENT STATE? ---------------- #}
+<section class="card why-card">
+  <h2>Why is this in its current state?</h2>
+  <p class="why-text">{{ workstation_why }}</p>
+  <p class="sm muted">
+    This explanation is synthesized from the REUSED outputs only (actionability reason, decision
+    classification, scan reason, warnings). It is descriptive presentation text &mdash; it introduces
+    NO new intelligence, NO prediction, and NO trading recommendation.
+  </p>
+</section>
+
+{# ---------------- CONSOLIDATED LIMITATIONS ---------------- #}
+<section class="card">
+  <h2>Limitations &amp; Warnings</h2>
+  <ul class="warnings">
+    {% for lim in workstation.limitations %}<li>{{ lim }}</li>{% endfor %}
+  </ul>
+  <p class="sm muted">{{ workstation.rationale }}</p>
+</section>
+
+{# ---------------- NAVIGATION ---------------- #}
+<section class="card nav-card">
+  <a href="/scan?timeframe={{ selected_timeframe }}{% if instruments_param %}&amp;instruments={{ instruments_param }}{% endif %}">&larr; Back to Scanner</a>
+  <a href="/?instrument={{ selected_instrument }}&amp;timeframe={{ selected_timeframe }}">Trade Review &rarr;</a>
+  <a href="/api/workstation?instrument={{ selected_instrument }}&amp;timeframe={{ selected_timeframe }}{% if instruments_param %}&amp;instruments={{ instruments_param }}{% endif %}">JSON</a>
+</section>
+
+{% else %}
+<section class="card"><p>The workstation produced no view. Select a timeframe and refresh.</p></section>
+{% endif %}
+
+{% endblock %}

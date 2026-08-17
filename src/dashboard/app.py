@@ -34,9 +34,15 @@ from dashboard.services import (
     DashboardAnalysisService,
     EvidenceSource,
     ScanRequest,
+    WorkstationRequest,
     default_service,
 )
-from dashboard.views import scan_view_to_jsonable, to_jsonable
+from dashboard.views import (
+    scan_view_to_jsonable,
+    to_jsonable,
+    workstation_view_to_jsonable,
+    workstation_why,
+)
 from dashboard.watchlist import Watchlist
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -295,6 +301,85 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
         )
         return scan_view_to_jsonable(scan)
 
+    # ------------------------------------------------------------
+    # LIVE TRADING WORKSTATION (Product Phase 3)
+    # ------------------------------------------------------------
+
+    def _parse_watchlist(instruments: str, svc: DashboardAnalysisService):
+        if instruments:
+            parsed = [i.strip() for i in instruments.split(",") if i.strip()]
+            return Watchlist(parsed) if parsed else svc.default_watchlist()
+        return svc.default_watchlist()
+
+    @app.get("/workstation", response_class=HTMLResponse)
+    def workstation_page(
+        request: Request,
+        instrument: str = "",
+        timeframe: str = "15m",
+        instruments: str = "",
+    ):
+        """Live trading workstation (Product Phase 3).
+
+        Bundles the watchlist scan + the selected instrument's detailed
+        trade review into one coherent view. Manual refresh only — no
+        background polling. The analysis always uses the latest
+        COMPLETED candle; no future candle is read.
+        """
+
+        svc = _service()
+        watchlist = _parse_watchlist(instruments, svc)
+        wv = svc.workstation(
+            WorkstationRequest(
+                instrument=instrument,
+                setup_timeframe=timeframe,
+                watchlist=watchlist,
+            ),
+        )
+        # Build the chart payload for the selected instrument (reuses
+        # the existing service chart_payload — backend-authored only).
+        chart = None
+        if wv.has_selected and wv.selected_view is not None:
+            chart = svc.chart_payload(
+                AnalysisRequest(
+                    instrument=wv.selected_instrument,
+                    setup_timeframe=timeframe,
+                ),
+                wv.selected_view,
+            )
+        ctx = {
+            "request": request,
+            "timeframes": svc.available_timeframes(),
+            "selected_timeframe": timeframe,
+            "instruments_param": instruments,
+            "workstation": wv,
+            "view": wv.selected_view,
+            "selected_instrument": wv.selected_instrument,
+            "chart": chart,
+            "chart_json": _chart_to_dict(chart) if chart else None,
+            "workstation_json": workstation_view_to_jsonable(wv),
+            "workstation_why": _workstation_why_text(wv),
+        }
+        return templates.TemplateResponse(request, "workstation.html", ctx)
+
+    @app.get("/api/workstation", response_class=JSONResponse)
+    def api_workstation(
+        instrument: str = "",
+        timeframe: str = "15m",
+        instruments: str = "",
+    ):
+        """Structured JSON for the live trading workstation (Product Phase 3)."""
+
+        svc = _service()
+        watchlist = _parse_watchlist(instruments, svc)
+        wv = svc.workstation(
+            WorkstationRequest(
+                instrument=instrument,
+                setup_timeframe=timeframe,
+                watchlist=watchlist,
+            ),
+        )
+        return workstation_view_to_jsonable(wv)
+
     return app
 
 
@@ -311,6 +396,15 @@ def _chart_to_dict(chart) -> dict:
         "resistance": chart.resistance,
         "invalidation_level": chart.invalidation_level,
     }
+
+
+def _workstation_why_text(wv) -> str:
+    """Render the workstation 'why' explanation (presentation text only)."""
+
+    try:
+        return workstation_why(wv)
+    except Exception:  # pragma: no cover - defensive
+        return ""
 
 
 #: A module-level app instance for `uvicorn dashboard.app:app`.

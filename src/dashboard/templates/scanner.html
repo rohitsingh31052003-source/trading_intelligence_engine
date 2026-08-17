@@ -91,7 +91,11 @@
           <td>{{ row.stop | fmt_price }}</td>
           <td>{{ row.target_1 | fmt_price }}</td>
           <td>{{ row.risk_reward_ratio | fmt_ratio }}</td>
-          <td><a href="/?instrument={{ row.instrument }}&amp;timeframe={{ scan.setup_timeframe }}">open</a></td>
+          <td>
+            <a href="/workstation?instrument={{ row.instrument }}&amp;timeframe={{ scan.setup_timeframe }}">workstation</a>
+            &middot;
+            <a href="/?instrument={{ row.instrument }}&amp;timeframe={{ scan.setup_timeframe }}">review</a>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

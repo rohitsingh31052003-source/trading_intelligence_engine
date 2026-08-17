@@ -6,7 +6,12 @@ Status:
 Core market-analysis and historical decision-intelligence architecture complete
 (Sprints 11A–12E). A local web dashboard / productization layer is available
 (`dashboard/`) that exposes the existing intelligence engine as an intraday
-trade-review workstation for discretionary trading research.
+trade-review workstation for discretionary trading research. The productization
+roadmap is: Product Phase 1 (live / near-live market-data integration) — COMPLETE;
+Product Phase 2 (multi-instrument scanner & watchlist) — COMPLETE;
+Product Phase 3 (live trading workstation / dashboard) — COMPLETE;
+Product Phase 4 (risk & trade planning) — FUTURE; Product Phase 5 (paper trading
+& real-world validation) — FUTURE.
 
 The architecture is DESCRIPTIVE ONLY: it provides technical-analysis and
 historical research context, does not guarantee future performance, and does not
@@ -105,6 +110,64 @@ python -m uvicorn dashboard.app:app --reload
 The scanner is DESCRIPTIVE ONLY — it does not predict, does not guarantee
 profitability, and does not constitute a trading recommendation.
 
+## Live trading workstation (Product Phase 3)
+
+The dashboard has a coherent **live trading workstation** at `/workstation`
+(JSON at `/api/workstation`) that bundles the watchlist scanner + the selected
+instrument's detailed trade review into one view for intraday market
+monitoring and trade review. It is the natural "monitor the watchlist + inspect
+one instrument" surface a human trader uses.
+
+```bash
+python -m uvicorn dashboard.app:app --reload
+# open http://127.0.0.1:8000/workstation
+# or GET /api/workstation?instrument=NIFTY&timeframe=15m
+```
+
+- **Reuse-only** — the workstation orchestrates the EXISTING
+  `DashboardAnalysisService.scan_watchlist` (Product Phase 2) +
+  `analyze` (Product Phase 1) for the selected instrument. It implements NO
+  new market-analysis, decision, scoring, geometry or evidence logic; every
+  value is read from the reused outputs.
+- **Layout** — top controls (timeframe / watchlist / focus instrument /
+  **Refresh**), a Market / Watchlist Status table (reused scanner rows, each
+  row links to focus that instrument in the workstation), the Selected
+  Instrument detail (reused trade-review sections: data source,
+  actionability, market overview, decision, trade geometry, evidence, chart,
+  warnings), a "Why is this in its current state?" explanation (descriptive
+  text synthesized from the reused outputs), and a consolidated Limitations
+  section.
+- **Navigation** — the workstation links back to `/scan` (Scanner) and `/`
+  (Trade Review); scanner rows link to the workstation; the nav bar offers
+  Workstation / Scanner / Trade Review. All existing routes are preserved.
+- **Refresh is deliberate + manual** — the **Refresh** button re-submits the
+  form (a GET request) and re-runs the analysis over the latest COMPLETED
+  candle. There is **no background polling and no WebSocket streaming**. The
+  `refresh_token` is the honest evaluation boundary (the latest completed
+  candle timestamp), never a wall-clock value during fixture analysis.
+- **Completed-candle boundary** — inherited from Product Phase 1: the
+  analysis always uses the latest COMPLETED setup candle; a forming candle is
+  shown for display only and is never fed to the engine; future-dated candles
+  are rejected. The workstation never calls the Sprint 11W outcome evaluator
+  and never runs the historical pipeline during current analysis.
+- **Decision authority** — the existing Sprint 11S decision classification
+  (`REJECTED` / `WATCH` / `QUALIFIED` / `PREFERRED`) is reused **verbatim** —
+  never renamed to BUY/SELL, never upgraded / downgraded. The watchlist row
+  order is the reused PRESENTATIONAL ordering (a sort, not a predictive
+  score).
+- **Trade geometry** — entry / stop (invalidation) / target 1 / risk / reward
+  / R:R are reused **verbatim** from the Sprint 11R `TradeCandidate`. Target 2
+  remains unsupported (`None` + `target_2_supported=False`).
+- **Evidence** — evidence is reused from the optional offline Sprint 11Y
+  corpus; without a corpus it is honestly `UNAVAILABLE` (NOT `INSUFFICIENT`,
+  never fabricated).
+- **Determinism** — repeated / shuffled-input scans produce identical output
+  and row order; the selected instrument is chosen deterministically when not
+  specified (first analyzed row), never invented.
+
+The workstation is DESCRIPTIVE ONLY — it does not predict, does not guarantee
+profitability, and does not constitute a trading recommendation.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures
@@ -169,11 +232,15 @@ analysis (entry / stop / target / decision).
 
 ## What the dashboard does NOT do
 
-The dashboard is descriptive/contextual. It does **not** guarantee future
-performance, does **not** predict winning trades, does **not** claim high accuracy
-or guaranteed signals, and does **not** imply a "profitable strategy". It has no
-broker integration, no order placement, no live execution, no position sizing,
-and no portfolio management. Those are intentionally out of scope.
+The dashboard (including the live trading workstation) is descriptive/contextual.
+It does **not** guarantee future performance, does **not** predict winning
+trades, does **not** claim high accuracy or guaranteed signals, and does
+**not** imply a "profitable strategy". It has no broker integration, no order
+placement, no live execution, no position sizing, and no portfolio management.
+There is no background polling / WebSocket streaming / autonomous trading. Risk
+& trade planning (Product Phase 4), paper trading & real-world validation
+(Product Phase 5), and broker integration / order execution are intentionally
+out of scope for the current phase.
 
 See `AGENTS.md` for the full architecture, the dashboard section, API routes,
 no-look-ahead guarantees, trade-geometry semantics and limitations.

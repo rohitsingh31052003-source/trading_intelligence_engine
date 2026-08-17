@@ -77,9 +77,11 @@ from dashboard.views import (
     MarketOverviewView,
     WatchlistRowView,
     WatchlistScanView,
+    WorkstationView,
     derive_actionability,
     derive_actionability_reason,
     scanner_rank_key,
+    workstation_why,
 )
 from dashboard.watchlist import Watchlist
 
@@ -140,6 +142,43 @@ class ScanRequest:
     watchlist: Watchlist | None = None
     setup_timeframe: str = "15m"
     context_timeframe: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkstationRequest:
+    """
+    A live-trading-workstation request (Product Phase 3).
+
+    The workstation bundles the watchlist scan + the selected
+    instrument's detailed review into one coherent view. This request
+    carries the selection + an optional watchlist override.
+
+    Attributes:
+
+    instrument
+        Canonical instrument name selected for detailed review. When
+        empty / not in the watchlist the workstation still renders the
+        watchlist status table and selects the first analyzed row's
+        instrument (deterministic fallback; never invents an
+        opportunity).
+
+    setup_timeframe
+        Dashboard setup (execution) timeframe label.
+
+    context_timeframe
+        Optional explicit context (higher) timeframe. When ``None`` a
+        sensible fallback is derived per the existing single-instrument
+        behavior.
+
+    watchlist
+        Optional :class:`~dashboard.watchlist.Watchlist` to scan. When
+        ``None`` the provider's default watchlist is used.
+    """
+
+    instrument: str = ""
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+    watchlist: Watchlist | None = None
 
 
 @dataclass(frozen=True)
@@ -457,6 +496,169 @@ class DashboardAnalysisService:
             actionable_count=actionable,
             warnings=tuple(scan_warnings),
             rationale=rationale,
+        )
+
+    # ------------------------------------------------------------
+    # LIVE TRADING WORKSTATION (Product Phase 3)
+    # ------------------------------------------------------------
+
+    def workstation(self, request: WorkstationRequest) -> WorkstationView:
+        """
+        Build the coherent live-trading-workstation view: the watchlist
+        status table + the selected instrument's detailed review.
+
+        This method is PURE ORCHESTRATION. It reuses
+        :meth:`scan_watchlist` (which reuses :meth:`analyze`) and
+        :meth:`analyze` for the selected instrument. It implements NO
+        new market-analysis, decision, scoring, geometry or evidence
+        logic — every value is read from the reused outputs. The
+        embedded scan + trade view are retained BY REFERENCE and never
+        modified.
+
+        GUARANTEES (Product Phase 3):
+
+        * **Reuse-only**: reuses :meth:`scan_watchlist` +
+          :meth:`analyze` only. No new intelligence, no new score.
+        * **Completed-candle guarantee**: inherited from
+          :meth:`analyze` / :meth:`scan_watchlist` — the selected
+          instrument is evaluated using the latest COMPLETED setup
+          candle; a forming candle is never fed to the engine and no
+          future candle is read.
+        * **No look-ahead**: this method accepts NO ``future`` /
+          ``future_candles`` argument; it never calls the Sprint 11W
+          outcome evaluator and never runs the historical pipeline
+          (inherited from :meth:`analyze`).
+        * **Decision authority**: the existing decision classification
+          is reused VERBATIM — never renamed to BUY/SELL, never
+          upgraded / downgraded. The watchlist row order is the reused
+          PRESENTATIONAL ordering (a sort, not a score).
+        * **Deterministic selection**: when the requested instrument is
+          empty / not analyzable, the workstation deterministically
+          selects the first analyzed (non-error) row's instrument —
+          never invents an opportunity. When nothing is analyzable the
+          selected view is an honest unavailable view.
+        * **Manual refresh only**: there is NO background polling. The
+          ``refresh_token`` is the honest evaluation boundary (latest
+          completed candle timestamp of the selected view) so a
+          deliberate refresh re-runs the analysis over the latest
+          completed candle.
+
+        The result is DESCRIPTIVE ONLY. It does NOT guarantee future
+        performance and does NOT constitute a trading recommendation.
+        """
+
+        watchlist = (
+            request.watchlist
+            if request.watchlist is not None
+            else self.default_watchlist()
+        )
+        scan = self.scan_watchlist(
+            ScanRequest(
+                watchlist=watchlist,
+                setup_timeframe=request.setup_timeframe,
+                context_timeframe=request.context_timeframe,
+            ),
+        )
+
+        # Deterministic instrument selection for the detailed review.
+        requested = request.instrument.strip().upper() if request.instrument else ""
+        selected_instrument = ""
+        if requested and requested in {r.instrument for r in scan.rows}:
+            # Only select an instrument the scan actually analyzed (or
+            # at least attempted). A requested instrument not in the
+            # watchlist falls back to the first analyzed row.
+            selected_instrument = requested
+        if not selected_instrument:
+            for row in scan.rows:
+                if not row.error:
+                    selected_instrument = row.instrument
+                    break
+            # If every row errored, still pick the first row's
+            # instrument so the detail panel can show the honest
+            # unavailable state for that instrument.
+            if not selected_instrument and scan.rows:
+                selected_instrument = scan.rows[0].instrument
+
+        selected_view: DashboardTradeView | None = None
+        if selected_instrument:
+            try:
+                selected_view = self.analyze(
+                    AnalysisRequest(
+                        instrument=selected_instrument,
+                        setup_timeframe=request.setup_timeframe,
+                        context_timeframe=request.context_timeframe,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - failure isolation
+                selected_view = self._unavailable_view(
+                    AnalysisRequest(
+                        instrument=selected_instrument,
+                        setup_timeframe=request.setup_timeframe,
+                        context_timeframe=request.context_timeframe,
+                    ),
+                    scan.context_timeframe or "",
+                    f"workstation could not analyze {selected_instrument}",
+                )
+
+        # Deterministic refresh token = the honest evaluation boundary
+        # of the selected view (latest completed candle timestamp).
+        # NEVER a wall-clock value during fixture analysis; "" when
+        # unavailable.
+        refresh_token = ""
+        if selected_view is not None:
+            ts = selected_view.data_source.latest_completed_candle_timestamp
+            if ts is None and selected_view.evaluation_timestamp is not None:
+                ts = selected_view.evaluation_timestamp
+            if ts is not None:
+                refresh_token = ts.isoformat()
+
+        # Consolidated honesty limitations (workstation-level, in
+        # addition to the selected view's own warnings).
+        limitations: list[str] = [
+            "The workstation is a coherent presentation bundle of "
+            "already-computed descriptive artifacts; it does NOT "
+            "establish predictive validity, statistical significance, "
+            "or future profitability, and does NOT constitute a "
+            "trading recommendation.",
+            "Refresh is a deliberate manual action; there is NO "
+            "background polling or WebSocket streaming. The analysis "
+            "always uses the latest COMPLETED candle.",
+            "Target 2 is not supported by the architecture "
+            "(target_2 = None, target_2_supported = False).",
+            "Risk management, position sizing, broker integration, "
+            "order execution, paper trading and portfolio management "
+            "are intentionally out of scope (later product phases).",
+        ]
+        if scan.has_errors:
+            limitations.append(
+                f"{scan.errored} instrument(s) could not be analyzed "
+                "(provider failure / unsupported instrument / "
+                "timeframe / empty or invalid data); they are reported "
+                "honestly as INVALID rows and were NOT fabricated into "
+                "opportunities (failure isolation).",
+            )
+
+        rationale = (
+            "The live trading workstation bundles the watchlist scan "
+            "(PRESENTATIONAL row order — a sort, not a predictive "
+            "score) with the selected instrument's detailed trade "
+            "review. Every value is reused verbatim from the existing "
+            "intelligence engine. The existing decision classification "
+            "(REJECTED / WATCH / QUALIFIED / PREFERRED) is "
+            "authoritative and is never renamed to BUY/SELL or "
+            "upgraded / downgraded. The workstation is DESCRIPTIVE "
+            "ONLY."
+        )
+
+        return WorkstationView(
+            selected_instrument=selected_instrument,
+            setup_timeframe=request.setup_timeframe,
+            context_timeframe=scan.context_timeframe or "",
+            scan=scan,
+            selected_view=selected_view,
+            refresh_token=refresh_token,
+            rationale=rationale,
+            limitations=tuple(limitations),
         )
 
     def default_watchlist(self) -> Watchlist:
@@ -1061,5 +1263,6 @@ __all__ = [
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
     "ScanRequest",
+    "WorkstationRequest",
     "default_service",
 ]

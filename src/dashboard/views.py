@@ -1116,6 +1116,169 @@ def scan_view_to_jsonable(scan: WatchlistScanView) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class WorkstationView:
+    """
+    The LIVE TRADING WORKSTATION view (Product Phase 3) — one coherent
+    presentation artifact bundling the multi-instrument watchlist status
+    (reused :class:`WatchlistScanView`) with the selected instrument's
+    detailed trade-review (reused :class:`DashboardTradeView`).
+
+    This is PURE ORCHESTRATION + PRESENTATION. It implements NO new
+    intelligence, NO scoring, NO prediction. Every value is read from
+    the reused scan + trade-review outputs produced by the EXISTING
+    :meth:`DashboardAnalysisService.scan_watchlist` +
+    :meth:`DashboardAnalysisService.analyze`. It is the coherent
+    "monitor the watchlist + inspect one instrument" surface a human
+    trader uses for intraday market monitoring and trade review.
+
+    The workstation is DESCRIPTIVE ONLY. It does NOT guarantee future
+    performance, does NOT constitute a trading recommendation, and does
+    NOT modify the existing decision / scoring logic. The existing
+    decision classification (REJECTED / WATCH / QUALIFIED / PREFERRED)
+    is reused verbatim — never renamed to BUY/SELL, never upgraded /
+    downgraded.
+
+    Attributes:
+
+    selected_instrument
+        Canonical instrument name currently selected for detailed
+        review (reused). May be ``""`` when the watchlist is empty.
+
+    setup_timeframe / context_timeframe
+        The timeframe pair used (reused). ``context_timeframe`` may be
+        ``""`` when no context could be derived.
+
+    scan
+        The reused :class:`WatchlistScanView` (watchlist status table).
+        Retained BY REFERENCE; never modified.
+
+    selected_view
+        The reused :class:`DashboardTradeView` for the selected
+        instrument / timeframe (detailed review). Retained BY REFERENCE;
+        never modified. ``None`` only when nothing could be analysed
+        (e.g. empty watchlist / unsupported timeframe).
+
+    refresh_token
+        A deterministic token identifying the current analysis snapshot
+        (the latest completed candle timestamp of the selected view, or
+        ``""`` when unavailable). Used by the manual refresh control so
+        repeated clicks re-run the analysis over the latest completed
+        candle. This is NEVER a cache key derived from wall-clock during
+        fixture analysis — it is the honest evaluation boundary. There
+        is NO background polling; refresh is always a deliberate manual
+        action.
+
+    rationale
+        Descriptive explanation that the workstation is a coherent
+        presentation bundle of already-computed descriptive artifacts,
+        not a prediction engine.
+
+    limitations
+        Tuple of human-readable honesty limitations (consolidated from
+        the selected view's warnings + workstation-level limitations).
+        Descriptive only.
+
+    Notes:
+        The ``why`` explanation (why the selected instrument is in its
+        current state) is synthesized by :func:`workstation_why` from
+        the REUSED outputs only — it is presentation text, never a new
+        intelligence value.
+    """
+
+    selected_instrument: str = ""
+    setup_timeframe: str = ""
+    context_timeframe: str = ""
+    scan: WatchlistScanView = field(default_factory=WatchlistScanView)
+    selected_view: DashboardTradeView | None = None
+    refresh_token: str = ""
+    rationale: str = ""
+    limitations: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def has_selected(self) -> bool:
+        """Whether a detailed selected-instrument view is present."""
+
+        return self.selected_view is not None
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the watchlist scan produced no rows."""
+
+        return self.scan.is_empty
+
+
+def workstation_why(view: WorkstationView) -> str:
+    """
+    Synthesize a descriptive "why is the selected instrument in its
+    current state?" explanation from the REUSED outputs only.
+
+    This is PRESENTATION TEXT — it strings together the reused
+    actionability reason, decision classification, scan reason and
+    warnings. It introduces NO new intelligence, NO prediction, NO
+    recommendation. When no selected view exists it states that
+    honestly.
+    """
+
+    if not view.has_selected or view.selected_view is None:
+        return (
+            "No instrument is selected for detailed review, or no "
+            "analysis could be produced for the selected instrument / "
+            "timeframe. Select an instrument from the watchlist and "
+            "refresh."
+        )
+    sv = view.selected_view
+    parts: list[str] = []
+    parts.append(
+        f"{view.selected_instrument} ({view.setup_timeframe} setup / "
+        f"{view.context_timeframe or 'unavailable'} context) is in the "
+        f"{sv.actionability.value} review state.",
+    )
+    if sv.actionability_detail.reason:
+        parts.append(sv.actionability_detail.reason)
+    dc = sv.decision.decision_classification
+    if dc:
+        parts.append(
+            f"The existing engine decision classification is {dc} "
+            "(authoritative; never renamed to BUY/SELL).",
+        )
+    if sv.reason:
+        parts.append(f"Scan reason: {sv.reason}")
+    if sv.warnings:
+        parts.append(
+            "Active limitations: " + "; ".join(sv.warnings),
+        )
+    return " ".join(parts)
+
+
+def workstation_view_to_jsonable(view: WorkstationView) -> dict[str, Any]:
+    """
+    Convert a :class:`WorkstationView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. Reuses
+    :func:`scan_view_to_jsonable` + :func:`to_jsonable` for the embedded
+    scan + trade view; no value is recomputed. The five concerns
+    (decision / geometry / evidence / actionability / data source) stay
+    separate on the selected view; the scan rows keep their separate
+    fields too — never collapsed into one signal / score.
+    """
+
+    selected = view.selected_view
+    return {
+        "selected_instrument": view.selected_instrument,
+        "setup_timeframe": view.setup_timeframe,
+        "context_timeframe": view.context_timeframe,
+        "has_selected": view.has_selected,
+        "is_empty": view.is_empty,
+        "refresh_token": view.refresh_token,
+        "rationale": view.rationale,
+        "limitations": list(view.limitations),
+        "why": workstation_why(view),
+        "scan": scan_view_to_jsonable(view.scan),
+        "selected_view": to_jsonable(selected) if selected is not None else None,
+    }
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -1127,9 +1290,12 @@ __all__ = [
     "MarketOverviewView",
     "WatchlistRowView",
     "WatchlistScanView",
+    "WorkstationView",
     "derive_actionability",
     "derive_actionability_reason",
     "scan_view_to_jsonable",
     "scanner_rank_key",
     "to_jsonable",
+    "workstation_why",
+    "workstation_view_to_jsonable",
 ]
