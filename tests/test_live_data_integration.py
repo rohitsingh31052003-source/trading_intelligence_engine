@@ -125,6 +125,10 @@ class _FakeYahooBackend:
         self.responses: dict[tuple[str, str], list[OHLCVCandle]] = {}
         self.raise_on: set[tuple[str, str]] = set()
         self.calls: list[tuple[str, str]] = []
+        # Recorded (symbol, interval, start, end) request windows so tests
+        # can assert the Yahoo request window is recent + bounded without
+        # making real network calls. Additive; does not affect behavior.
+        self.windows: list[tuple[str, str, datetime, datetime]] = []
 
     def connect(self) -> None:
         pass
@@ -140,6 +144,7 @@ class _FakeYahooBackend:
         interval: str,
     ) -> list[OHLCVCandle]:
         self.calls.append((symbol, interval))
+        self.windows.append((symbol, interval, start, end))
         key = (symbol, interval)
         if key in self.raise_on:
             raise RuntimeError(f"simulated network failure for {key}")

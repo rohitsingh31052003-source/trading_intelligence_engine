@@ -742,9 +742,14 @@ class YahooDataProvider:
     verbatim (Yahoo accepts many tickers directly, e.g. ``AAPL``).
 
     Yahoo Finance intraday intervals are limited (typically up to 60
-    days for <=5m, up to 730 days for <=1h). The provider requests a
-    best-effort lookback window; if Yahoo returns no data the result is
-    honestly unavailable.
+    days for <=30m/90m, up to 730 days for <=1h, up to 7 days for 1m).
+    The provider requests a RECENT, BOUNDED window derived from
+    ``lookback_bars`` + a modest engine-context buffer, capped per
+    interval at a value SAFELY INSIDE Yahoo's permitted range (never an
+    exact boundary, so clock skew / timezone differences cannot cause a
+    "must be within the last N days" rejection). It NEVER requests a
+    fixed 60-day window for every intraday call. If Yahoo returns no data
+    the result is honestly unavailable.
     """
 
     #: Default mapping from canonical dashboard instruments to Yahoo
@@ -768,6 +773,40 @@ class YahooDataProvider:
     SUPPORTED_INTERVALS: tuple[str, ...] = (
         "1m", "2m", "5m", "15m", "30m", "60m", "1h", "90m", "1D", "1d",
     )
+
+    #: Maximum retrievable history (in days) Yahoo permits per interval,
+    #: REDUCED by a small SAFETY MARGIN so the calculated ``start`` is
+    #: comfortably inside the permitted window. Yahoo rejects a request
+    #: whose range is "not within the last N days"; an exact-N-day
+    #: boundary can fail because of clock skew / timezone differences, so
+    #: we never sit on the boundary. Intervals not listed fall back to a
+    #: conservative intraday cap (58 days). Daily data is effectively
+    #: unlimited, so a generous cap is used.
+    YAHOO_INTERVAL_MAX_DAYS: dict[str, int] = {
+        "1m": 6,        # Yahoo ~7d -> 6d safe
+        "2m": 58,       # Yahoo ~60d -> 58d safe
+        "5m": 58,
+        "15m": 58,
+        "30m": 58,
+        "60m": 725,     # Yahoo ~730d -> 725d safe
+        "1h": 725,
+        "90m": 58,
+        "1D": 365 * 5,
+        "1d": 365 * 5,
+    }
+
+    #: Conservative fallback cap for any intraday interval without an
+    #: explicit entry above (Yahoo's common intraday limit class).
+    _YAHOO_DEFAULT_INTRADAY_MAX_DAYS: int = 58
+
+    #: Additional bars beyond ``lookback_bars`` the existing analysis
+    #: engine may need for swing / market-structure / trend / context
+    #: construction (the scanner's ``min_history`` default is 10, the
+    #: fixture baseline is 20, swing lookback is small). A modest, fixed
+    #: buffer keeps the requested window recent and bounded while still
+    #: giving the engine enough history to produce meaningful structure.
+    #: It is intentionally far below every interval's Yahoo limit.
+    ENGINE_CONTEXT_BUFFER_BARS: int = 250
 
     #: Name of this data source (Product Phase 1 metadata).
     DATA_SOURCE: str = "yahoo"
@@ -813,18 +852,55 @@ class YahooDataProvider:
     def is_timeframe_supported(self, setup_timeframe: str) -> bool:
         return setup_timeframe in self.SUPPORTED_INTERVALS
 
-    def _lookback_window(
-        self, interval: str, lookback_bars: int,
-    ) -> tuple[datetime, datetime]:
-        """Heuristic lookback window honoring Yahoo's intraday limits."""
+    def _interval_max_days(self, interval: str) -> int:
+        """Yahoo's permitted history (days) for ``interval``, safety-margined.
 
-        end = datetime.now(self._provider_tz())
-        if interval == "1d":
-            start = end - timedelta(days=max(lookback_bars, 365))
-        elif interval in ("1h", "60m"):
-            start = end - timedelta(days=730)
-        else:
-            start = end - timedelta(days=60)
+        Falls back to the conservative intraday cap for any intraday
+        interval without an explicit entry. Never sits on Yahoo's exact
+        boundary (clock-skew / timezone safe).
+        """
+
+        return self.YAHOO_INTERVAL_MAX_DAYS.get(
+            interval, self._YAHOO_DEFAULT_INTRADAY_MAX_DAYS,
+        )
+
+    def _lookback_window(
+        self,
+        interval: str,
+        lookback_bars: int,
+        *,
+        reference_now: datetime | None = None,
+    ) -> tuple[datetime, datetime]:
+        """
+        Recent, bounded Yahoo request window honoring ``lookback_bars``.
+
+        The window span is derived from the candles the caller actually
+        requires (``lookback_bars``) PLUS a modest
+        :data:`ENGINE_CONTEXT_BUFFER_BARS` so the existing analysis engine
+        has enough history for swing / structure / trend construction. The
+        span in days is then CAPPED at the interval-specific Yahoo maximum
+        (already safety-margined), so the request is always comfortably
+        inside Yahoo's permitted range and never an exact boundary.
+
+        This is why a ``15m`` / ``lookback_bars=50`` request yields a
+        recent ~3-day window (300 bars * 15min) instead of an unnecessary
+        60-day window that Yahoo rejects.
+        """
+
+        end = reference_now if reference_now is not None else datetime.now(
+            self._provider_tz(),
+        )
+        max_days = self._interval_max_days(interval)
+        # Duration of one candle for this interval (seconds). Unknown
+        # durations conservatively use a 1-day candle so the span is
+        # generous but still capped by ``max_days``.
+        dur = timeframe_duration_seconds(interval)
+        if dur is None or dur <= 0:
+            dur = 86400
+        required_bars = max(1, lookback_bars) + self.ENGINE_CONTEXT_BUFFER_BARS
+        required_days = required_bars * dur / 86400.0
+        span_days = min(required_days, float(max_days))
+        start = end - timedelta(days=span_days)
         return start, end
 
     @staticmethod
@@ -859,7 +935,12 @@ class YahooDataProvider:
         )
 
     def _fetch_raw(
-        self, symbol: str, interval: str, lookback_bars: int,
+        self,
+        symbol: str,
+        interval: str,
+        lookback_bars: int,
+        *,
+        reference_now: datetime | None = None,
     ) -> tuple[list[OHLCVCandle], ProviderStatus, str]:
         """Fetch raw candles from the underlying Yahoo provider."""
 
@@ -869,7 +950,9 @@ class YahooDataProvider:
                 f"or init failed ({self._init_error or 'yfinance/pandas not installed'})"
             )
         try:
-            start, end = self._lookback_window(interval, lookback_bars)
+            start, end = self._lookback_window(
+                interval, lookback_bars, reference_now=reference_now,
+            )
             candles = self._provider.get_history(
                 symbol=symbol,
                 start=start,
@@ -955,7 +1038,7 @@ class YahooDataProvider:
         interval = "1d" if setup_timeframe.upper() == "1D" else setup_timeframe
 
         setup_raw, setup_status, setup_reason = self._fetch_raw(
-            symbol, interval, lookback_bars,
+            symbol, interval, lookback_bars, reference_now=now,
         )
         if setup_status is not ProviderStatus.OK or not setup_raw:
             return InstrumentSeries(
@@ -1000,7 +1083,7 @@ class YahooDataProvider:
             if self.is_timeframe_supported(ctx_tf):
                 ctx_interval = "1d" if ctx_tf.upper() == "1D" else ctx_tf
                 ctx_raw, ctx_status, ctx_r = self._fetch_raw(
-                    symbol, ctx_interval, lookback_bars,
+                    symbol, ctx_interval, lookback_bars, reference_now=now,
                 )
                 if ctx_status is ProviderStatus.OK and ctx_raw:
                     ctx_boundary = split_completed_candles(
