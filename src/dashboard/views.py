@@ -1633,6 +1633,175 @@ def to_paper_trade_view(trade: PaperTrade) -> PaperTradeView:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class InstrumentOperationRowView:
+    """
+    Presentation view of one :class:`InstrumentOperationResult`.
+
+    A READ-ONLY projection. It implements NO calculation, NO prediction, NO
+    recommendation. Every value is copied verbatim from the operational
+    result. The system decision (``decision_classification``) is
+    AUTHORITATIVE; a paper-trade RESULT never rewrites it.
+    """
+
+    instrument: str = ""
+    analysed: bool = False
+    actionability: str = ""
+    eligible_for_paper_trade: bool = False
+    decision_classification: str = ""
+    direction: str = ""
+    evaluation_timestamp: datetime | None = None
+    provider_status: str = ""
+    freshness_state: str = ""
+    created: tuple[str, ...] = field(default_factory=tuple)
+    updated: tuple[str, ...] = field(default_factory=tuple)
+    closed: tuple[str, ...] = field(default_factory=tuple)
+    duplicate: bool = False
+    duplicate_paper_trade_id: str = ""
+    error: bool = False
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class OperationsCycleView:
+    """
+    Presentation view of an :class:`OperationsCycleResult`.
+
+    A READ-ONLY projection of one operational cycle. It implements NO
+    calculation, NO prediction, NO recommendation. Paper trading is
+    observational validation only; no real order is placed. The existing
+    decision engine remains authoritative.
+
+    Attributes mirror :class:`OperationsCycleResult`; see that model for the
+    authoritative semantics. ``status`` is the
+    :class:`~dashboard.paper_trade_operations.OperationalStatus` name.
+    """
+
+    cycle_id: str = ""
+    status: str = "NOT_READY"
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    reference_now: datetime | None = None
+    provider: str = ""
+    freshness: str = ""
+    instruments_scanned: int = 0
+    instruments_analysed: int = 0
+    trades_created: int = 0
+    trades_updated: int = 0
+    trades_closed: int = 0
+    duplicates_skipped: int = 0
+    errors: tuple[str, ...] = field(default_factory=tuple)
+    active_trades: int = 0
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+    results: tuple[InstrumentOperationRowView, ...] = field(default_factory=tuple)
+    rationale: str = ""
+    limitations: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return self.instruments_scanned == 0
+
+
+def to_operations_cycle_view(result: Any) -> OperationsCycleView:
+    """Project an :class:`OperationsCycleResult` into a view (pure projection)."""
+
+    rows = tuple(
+        InstrumentOperationRowView(
+            instrument=r.instrument,
+            analysed=r.analysed,
+            actionability=r.actionability,
+            eligible_for_paper_trade=r.eligible_for_paper_trade,
+            decision_classification=r.decision_classification,
+            direction=r.direction,
+            evaluation_timestamp=r.evaluation_timestamp,
+            provider_status=r.provider_status,
+            freshness_state=r.freshness_state,
+            created=tuple(r.created),
+            updated=tuple(r.updated),
+            closed=tuple(r.closed),
+            duplicate=r.duplicate,
+            duplicate_paper_trade_id=r.duplicate_paper_trade_id,
+            error=r.error,
+            reason=r.reason,
+        )
+        for r in result.results
+    )
+    return OperationsCycleView(
+        cycle_id=result.cycle_id,
+        status=result.status.value,
+        started_at=result.started_at,
+        completed_at=result.completed_at,
+        reference_now=result.reference_now,
+        provider=result.provider,
+        freshness=result.freshness,
+        instruments_scanned=result.instruments_scanned,
+        instruments_analysed=result.instruments_analysed,
+        trades_created=result.trades_created,
+        trades_updated=result.trades_updated,
+        trades_closed=result.trades_closed,
+        duplicates_skipped=result.duplicates_skipped,
+        errors=tuple(result.errors),
+        active_trades=result.active_trades,
+        warnings=tuple(result.warnings),
+        results=rows,
+        rationale=result.rationale,
+        limitations=result.limitations,
+    )
+
+
+def operations_cycle_view_to_jsonable(view: OperationsCycleView) -> dict[str, Any]:
+    """Convert an :class:`OperationsCycleView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. No value is recomputed.
+    """
+
+    def _ts(t: datetime | None) -> str | None:
+        return None if t is None else t.isoformat()
+
+    return {
+        "status": view.status,
+        "cycle_id": view.cycle_id,
+        "started_at": _ts(view.started_at),
+        "completed_at": _ts(view.completed_at),
+        "reference_now": _ts(view.reference_now),
+        "provider": view.provider,
+        "freshness": view.freshness,
+        "instruments_scanned": view.instruments_scanned,
+        "instruments_analysed": view.instruments_analysed,
+        "trades_created": view.trades_created,
+        "trades_updated": view.trades_updated,
+        "trades_closed": view.trades_closed,
+        "duplicates_skipped": view.duplicates_skipped,
+        "errors": list(view.errors),
+        "active_trades": view.active_trades,
+        "warnings": list(view.warnings),
+        "results": [
+            {
+                "instrument": r.instrument,
+                "analysed": r.analysed,
+                "actionability": r.actionability,
+                "eligible_for_paper_trade": r.eligible_for_paper_trade,
+                "decision_classification": r.decision_classification,
+                "direction": r.direction,
+                "evaluation_timestamp": _ts(r.evaluation_timestamp),
+                "provider_status": r.provider_status,
+                "freshness_state": r.freshness_state,
+                "created": list(r.created),
+                "updated": list(r.updated),
+                "closed": list(r.closed),
+                "duplicate": r.duplicate,
+                "duplicate_paper_trade_id": r.duplicate_paper_trade_id,
+                "error": r.error,
+                "reason": r.reason,
+            }
+            for r in view.results
+        ],
+        "rationale": view.rationale,
+        "limitations": view.limitations,
+        "is_empty": view.is_empty,
+    }
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -1641,7 +1810,9 @@ __all__ = [
     "DecisionView",
     "EvidenceView",
     "GeometryView",
+    "InstrumentOperationRowView",
     "MarketOverviewView",
+    "OperationsCycleView",
     "PaperTradeJournalView",
     "PaperTradeView",
     "TradePlanView",
@@ -1650,11 +1821,13 @@ __all__ = [
     "WorkstationView",
     "derive_actionability",
     "derive_actionability_reason",
+    "operations_cycle_view_to_jsonable",
     "paper_trade_journal_view_to_jsonable",
     "paper_trade_view_to_jsonable",
     "scan_view_to_jsonable",
     "scanner_rank_key",
     "to_jsonable",
+    "to_operations_cycle_view",
     "to_paper_trade_view",
     "trade_plan_view_to_jsonable",
     "workstation_why",

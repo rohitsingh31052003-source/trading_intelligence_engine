@@ -224,3 +224,23 @@ body {
   margin: 14px 0 6px; font-size: 0.85rem; text-transform: uppercase;
   letter-spacing: 0.06em; color: var(--muted); font-weight: 700;
 }
+
+
+/* ============================================================
+   PAPER TRADING OPERATIONS (Product Phase 5 operational increment)
+   ============================================================ */
+.operations-card { border-left: 4px solid var(--teal, #0ea5a4); }
+.operations-form {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  margin: 10px 0 14px;
+}
+.operations-form button {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px;
+  padding: 8px 16px; font-weight: 700; cursor: pointer;
+}
+.operations-form button:hover { filter: brightness(1.1); }
+.operations-card .badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  background: var(--muted); color: #fff; font-size: 0.7rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em; margin-left: 8px;
+}

@@ -84,7 +84,9 @@ from dashboard.views import (
     DecisionView,
     EvidenceView,
     GeometryView,
+    InstrumentOperationRowView,
     MarketOverviewView,
+    OperationsCycleView,
     PaperTradeJournalView,
     PaperTradeView,
     TradePlanView,
@@ -93,10 +95,12 @@ from dashboard.views import (
     WorkstationView,
     derive_actionability,
     derive_actionability_reason,
+    operations_cycle_view_to_jsonable,
     paper_trade_journal_view_to_jsonable,
     paper_trade_view_to_jsonable,
     scanner_rank_key,
     to_jsonable,
+    to_operations_cycle_view,
     to_paper_trade_view,
     workstation_why,
 )
@@ -325,6 +329,54 @@ class PaperTradeManualCloseRequest:
 
 
 @dataclass(frozen=True)
+class OperationsRequest:
+    """
+    A paper-trading OPERATIONAL cycle request (Product Phase 5 operations).
+
+    Drives ONE deterministic :meth:`DashboardAnalysisService.run_paper_trading_cycle`
+    observation cycle over a watchlist of instruments using the EXISTING
+    provider + analysis + paper-trading layers. Paper trading only — no real
+    order is placed.
+
+    Attributes:
+
+    account_capital / risk_percent
+        User-supplied account-risk parameters reused by the existing Phase 4
+        planner to size each eligible paper trade. Required for paper-trade
+        creation (the plan is reused verbatim).
+
+    setup_timeframe / context_timeframe
+        Dashboard setup / context timeframe pair (reused).
+
+    watchlist
+        Optional iterable of instrument names. When ``None`` the service's
+        available instruments are used; an explicitly empty watchlist
+        produces an empty cycle (honest, not a fallback).
+
+    reference_now
+        Optional deterministic reference timestamp for tracking. When
+        ``None`` the latest completed candle across analysed instruments is
+        used. NEVER a wall-clock in tests.
+
+    started_at
+        Optional deterministic cycle start timestamp (audit metadata).
+
+    label / metadata
+        Optional identity / metadata carried onto created paper trades.
+    """
+
+    account_capital: Any = None
+    risk_percent: Any = None
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+    watchlist: Any = None
+    reference_now: datetime | None = None
+    started_at: datetime | None = None
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChartPayload:
     """
     Candlestick chart payload (backend-authored; the frontend renders
@@ -425,6 +477,23 @@ class DashboardAnalysisService:
         self.paper_trading_engine = PaperTradingEngine(PaperTradeConfig())
         self.paper_trade_performance_engine = PaperTradePerformanceEngine()
         self.paper_trade_store = paper_trade_store
+        # Product Phase 5 operations — a THIN orchestration layer that runs
+        # one deterministic paper-trading observation cycle over a watchlist
+        # using the EXISTING provider + analysis + paper-trading layers. It
+        # implements NO new intelligence; the existing decision / geometry /
+        # plan / lifecycle are reused VERBATIM. Paper trading only — no real
+        # order is placed. Imported lazily to avoid a circular import
+        # (paper_trade_operations imports DashboardAnalysisService for typing).
+        from dashboard.paper_trade_operations import (
+            OperationsConfig,
+            PaperTradingOperations,
+        )
+        self.paper_trading_operations = PaperTradingOperations(self)
+        # Session-level cache of the last operations cycle (NOT persisted —
+        # purely so the workstation can surface the most recent cycle). It
+        # holds no market data and no future information; it is a read-only
+        # projection of an already-completed cycle.
+        self.last_operations_cycle: OperationsCycleView | None = None
 
     # ------------------------------------------------------------
     # METADATA (for selectors)
@@ -1148,6 +1217,68 @@ class DashboardAnalysisService:
             limitations=limitations,
         )
 
+    # ------------------------------------------------------------
+    # PAPER TRADING OPERATIONS (Product Phase 5 operational increment)
+    # ------------------------------------------------------------
+
+    def run_paper_trading_cycle(
+        self, request: OperationsRequest,
+    ) -> OperationsCycleView:
+        """
+        Run ONE deterministic paper-trading operational observation cycle.
+
+        ORCHESTRATION ONLY: delegates to :class:`PaperTradingOperations.run_once`,
+        which reuses the EXISTING provider + :meth:`analyze` + the EXISTING
+        :class:`PaperTradingEngine` create / track lifecycle + the EXISTING
+        :class:`PaperTradeStore`. The operations layer implements NO new
+        market-analysis / decision / scoring / geometry / position-sizing /
+        prediction / execution logic. The existing decision is AUTHORITATIVE;
+        a paper-trade RESULT never rewrites it.
+
+        GUARANTEES:
+
+        * **Reuse-only** — reuses :meth:`analyze` + the existing paper-trading
+          engine + the existing store.
+        * **Completed-candle only** — new trades use the latest COMPLETED
+          setup candle; the forming candle never creates / changes / closes
+          a trade; future-dated candles are rejected.
+        * **No look-ahead** — accepts NO ``future`` / ``future_candles``
+          argument; never calls the Sprint 11W outcome evaluator; never
+          runs the historical pipeline.
+        * **Duplicate prevention** — repeated cycles against the same
+          completed candle do not create duplicate trades.
+        * **Failure isolation** — one instrument failure never aborts the
+          cycle.
+        * **Determinism** — identical inputs produce an identical
+          ``cycle_id`` + outcome; instrument order is shuffle-invariant.
+
+        Paper trading only — NO real order is placed, NO broker is involved,
+        NO BUY/SELL/ENTER/EXIT/HOLD recommendation is produced. The result is
+        DESCRIPTIVE ONLY.
+        """
+
+        from dashboard.paper_trade_operations import OperationsConfig
+
+        cfg = OperationsConfig(
+            account_capital=request.account_capital,
+            risk_percent=request.risk_percent,
+            setup_timeframe=request.setup_timeframe,
+            context_timeframe=request.context_timeframe,
+            label=request.label,
+            metadata=request.metadata,
+        )
+        result = self.paper_trading_operations.run_once(
+            instruments=request.watchlist,
+            reference_now=request.reference_now,
+            started_at=request.started_at,
+            config=cfg,
+        )
+        view = to_operations_cycle_view(result)
+        # Cache the last cycle so the workstation can surface it (session
+        # level; not persisted; read-only projection).
+        self.last_operations_cycle = view
+        return view
+
     def _scan_one(
         self,
         instrument: str,
@@ -1856,6 +1987,7 @@ __all__ = [
     "DashboardAnalysisService",
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
+    "OperationsRequest",
     "PaperTradeManualCloseRequest",
     "PaperTradeRequest",
     "PaperTradeTrackRequest",

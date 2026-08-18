@@ -46,6 +46,7 @@ from dashboard.services import (
     default_service,
 )
 from dashboard.views import (
+    operations_cycle_view_to_jsonable,
     paper_trade_journal_view_to_jsonable,
     paper_trade_view_to_jsonable,
     scan_view_to_jsonable,
@@ -429,6 +430,7 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             "risk_percent": risk_percent,
             "trade_plan": trade_plan_view,
             "trade_plan_json": trade_plan_json,
+            "last_cycle": getattr(svc, "last_operations_cycle", None),
         }
         return templates.TemplateResponse(request, "workstation.html", ctx)
 
@@ -634,6 +636,54 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
                 content={"error": "invalid_cancel", "detail": str(exc)},
             )
         return paper_trade_view_to_jsonable(view)
+
+    @app.post("/api/paper-trading/run-once", response_class=JSONResponse)
+    def api_run_paper_trading_cycle(
+        instrument: str = "",
+        instruments: str = "",
+        timeframe: str = "15m",
+        account_capital: str = "",
+        risk_percent: str = "",
+    ):
+        """Run ONE deterministic paper-trading operational cycle.
+
+        Orchestrates the EXISTING provider + analysis + paper-trading layers
+        over a watchlist. Paper trading only — no real order is placed. New
+        paper trades are created ONLY from the latest COMPLETED candle when
+        the existing opportunity is ``READY_FOR_REVIEW`` (eligible + complete
+        geometry + QUALIFIED/PREFERRED). Duplicate trades against the same
+        completed candle are skipped. Existing open / waiting trades are
+        tracked against completed candles chronologically. One instrument
+        failure never aborts the cycle.
+
+        The response NEVER contains a BUY/SELL/ENTER/EXIT/HOLD
+        recommendation.
+        """
+
+        from datetime import datetime, timezone
+
+        from dashboard.services import OperationsRequest
+
+        svc = _service()
+        watchlist = _parse_watchlist(instruments, svc) if instruments else None
+        if instrument and not instruments:
+            watchlist = [instrument]
+        request = OperationsRequest(
+            account_capital=account_capital.strip() or None,
+            risk_percent=risk_percent.strip() or None,
+            setup_timeframe=timeframe,
+            watchlist=watchlist,
+            reference_now=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        try:
+            view = svc.run_paper_trading_cycle(request)
+        except Exception as exc:  # noqa: BLE001 - failure isolation
+            return JSONResponse(
+                status_code=500,
+                content={"error": "operations_cycle_failed", "detail": str(exc)},
+            )
+        return operations_cycle_view_to_jsonable(view)
 
     return app
 

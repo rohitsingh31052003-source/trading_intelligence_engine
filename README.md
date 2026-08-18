@@ -326,6 +326,66 @@ curl "http://127.0.0.1:8000/api/paper-trades"
   directly in the paper-trading engine). A previously-resolved (terminal) paper
   trade is never altered by future candles.
 
+### Paper trading operations (Product Phase 5 operational increment)
+
+The workstation has a **Paper Trading Operations** section (`GET /workstation`) and
+a `POST /api/paper-trading/run-once` endpoint that turn the paper-trading capability
+into a controlled, deterministic, real / near-live OPERATIONAL workflow. One
+`run_once()` observation cycle observes the configured watchlist through the
+existing Product Phase 1 provider, runs the existing analysis at completed-candle
+boundaries, creates paper trades for eligible existing opportunities, tracks
+already-open / waiting trades on subsequent completed candles chronologically, and
+persists state through the existing journal.
+
+```bash
+# Run ONE deterministic paper-trading observation cycle over the watchlist:
+curl -X POST "http://127.0.0.1:8000/api/paper-trading/run-once?instruments=NIFTY,RELIANCE&timeframe=15m&account_capital=100000&risk_percent=1"
+```
+
+- **Orchestration only** — the operations layer (`PaperTradingOperations.run_once`)
+  implements NO market analysis, NO decision logic, NO prediction, NO probability,
+  NO broker, NO BUY/SELL/ENTER/EXIT/HOLD recommendation. It reuses the existing
+  provider + `DashboardAnalysisService.analyze` + the existing `TradePlanningEngine`
+  + the existing `PaperTradingEngine` create/track lifecycle + the existing
+  `PaperTradeStore`.
+- **Completed-candle only** — new paper trades are created ONLY from the latest
+  COMPLETED setup candle when the existing opportunity is `READY_FOR_REVIEW`
+  (eligible + complete geometry + QUALIFIED/PREFERRED). The forming candle never
+  creates / changes / closes a trade; future-dated candles are rejected. No
+  `NO_OPPORTUNITY` / `INVALID` / `TRADE_GEOMETRY_UNAVAILABLE` opportunity is ever
+  paper-traded.
+- **Duplicate prevention** — repeated cycles against the same completed candle do
+  NOT create duplicate trades (deterministic trade id + `created_at` = evaluation
+  timestamp); duplicates are reported as `DUPLICATE` / `ALREADY_EXISTS`.
+- **One-candle-at-a-time / chronological** — if multiple previously-unseen
+  completed candles arrive after a downtime/restart, they are processed in
+  chronological order so an intervening target is never skipped.
+- **Restart / recovery** — on restart the operations layer loads existing
+  WAITING_FOR_ENTRY / OPEN trades from the journal and continues tracking them
+  without duplicating or resetting state (status / entry / exit / realized R /
+  trade id all preserved).
+- **Failure isolation** — one instrument failure (provider timeout / unsupported
+  instrument / empty data / malformed candle / raised exception) never aborts the
+  cycle; the failure is surfaced as an error and no trade is fabricated.
+- **Operational status** — `READY` / `STALE` / `NO_DATA` / `ERROR` / `NOT_READY`
+  (a SEPARATE concern from `ProviderStatus` and `FreshnessState`; never collapsed
+  into one score).
+- **Decision / geometry / plan preservation** — the existing decision
+  classification is reused VERBATIM (never renamed to BUY/SELL, never
+  upgraded/downgraded); trade geometry is reused VERBATIM; the trade plan is
+  reused VERBATIM; a paper-trade RESULT never rewrites the original system
+  decision; Target 2 remains unsupported.
+- **No-look-ahead** — `run_once()` accepts NO `future` / `future_candles`
+  argument; never calls `OutcomeEvaluator.evaluate`; never runs
+  `HistoricalEvaluationPipeline.evaluate`. Proven by patch-to-raise tests.
+- **Manual refresh first** — there is NO background polling / NO WebSocket
+  streaming. The deterministic `run_once()` is the core API; the UI offers a
+  manual "Run Paper Trading Cycle" action.
+- **Paper only** — no real order is placed anywhere; no broker API; no
+  credentials; no live execution. Paper-trade results are observational
+  validation and do not guarantee future performance or constitute financial
+  advice.
+
 ## Supported local data / timeframes
 
 Out of the box the dashboard runs on local deterministic OHLCV fixtures

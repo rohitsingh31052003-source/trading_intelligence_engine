@@ -214,6 +214,97 @@
   {% endif %}
 </section>
 
+{# ---------------- PAPER TRADING OPERATIONS (Product Phase 5) ---------------- #}
+<section class="card operations-card">
+  <h2>Paper Trading Operations <span class="badge">{{ last_cycle.status if last_cycle else 'not run' }}</span></h2>
+  <p class="sm muted">
+    Run ONE deterministic paper-trading observation cycle over the watchlist. New paper trades are created ONLY from the
+    latest <strong>COMPLETED</strong> candle when the existing opportunity is <strong>READY_FOR_REVIEW</strong> (eligible
+    + complete geometry + QUALIFIED/PREFERRED). Duplicate trades against the same completed candle are skipped. Existing
+    open / waiting trades are tracked against completed candles chronologically. One instrument failure never aborts the
+    cycle. This is <strong>PAPER TRADING ONLY</strong> &mdash; <strong>NO REAL ORDERS ARE SENT</strong>. The existing
+    decision engine remains authoritative; paper-trade results never rewrite it.
+  </p>
+  <form method="post" action="/api/paper-trading/run-once" class="selector-form operations-form" id="ops-form">
+    <input type="hidden" name="timeframe" value="{{ selected_timeframe }}">
+    {% if instruments_param %}<input type="hidden" name="instruments" value="{{ instruments_param }}">{% endif %}
+    <label>
+      Account capital
+      <input type="text" name="account_capital" value="{{ account_capital }}" placeholder="e.g. 100000" inputmode="decimal">
+    </label>
+    <label>
+      Risk % per trade
+      <input type="text" name="risk_percent" value="{{ risk_percent }}" placeholder="e.g. 1" inputmode="decimal">
+    </label>
+    <button type="submit">Run Paper Trading Cycle</button>
+  </form>
+  <p class="sm muted">
+    The cycle returns structured JSON; review it on the <a href="/paper-trading">Paper Trading journal</a> page or via
+    <code>POST /api/paper-trading/run-once</code>. Manual refresh only &mdash; no background polling.
+  </p>
+
+  {% if last_cycle %}
+  <h3 class="subhead">Last Cycle ({{ last_cycle.cycle_id }})</h3>
+  <div class="grid grid-4">
+    <div class="metric"><span class="label">Status</span><span class="value">{{ last_cycle.status }}</span></div>
+    <div class="metric"><span class="label">Provider</span><span class="value">{{ last_cycle.provider or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Freshness</span><span class="value">{{ last_cycle.freshness or 'unavailable' }}</span></div>
+    <div class="metric"><span class="label">Instruments Scanned</span><span class="value">{{ last_cycle.instruments_scanned }}</span></div>
+    <div class="metric"><span class="label">Trades Created</span><span class="value">{{ last_cycle.trades_created }}</span></div>
+    <div class="metric"><span class="label">Trades Updated</span><span class="value">{{ last_cycle.trades_updated }}</span></div>
+    <div class="metric"><span class="label">Trades Closed</span><span class="value">{{ last_cycle.trades_closed }}</span></div>
+    <div class="metric"><span class="label">Duplicates Skipped</span><span class="value">{{ last_cycle.duplicates_skipped }}</span></div>
+    <div class="metric"><span class="label">Active Trades</span><span class="value">{{ last_cycle.active_trades }}</span></div>
+    <div class="metric"><span class="label">Errors</span><span class="value {{ 'warn' if last_cycle.errors else 'muted' }}">{{ last_cycle.errors | length }}</span></div>
+    <div class="metric"><span class="label">Last Completed Candle</span><span class="value sm">{{ last_cycle.reference_now | fmt_ts or 'unavailable' }}</span></div>
+  </div>
+  {% if last_cycle.results %}
+  <table class="scanner-table">
+    <thead>
+      <tr>
+        <th>Instrument</th>
+        <th>Decision</th>
+        <th>Actionability</th>
+        <th>Eligible</th>
+        <th>Dir</th>
+        <th>Created</th>
+        <th>Updated</th>
+        <th>Closed</th>
+        <th>Duplicate</th>
+        <th>Error</th>
+        <th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in last_cycle.results %}
+      <tr class="actionability-{{ r.actionability or 'INVALID' }}">
+        <td>{{ r.instrument }}</td>
+        <td>{{ r.decision_classification or '-' }}</td>
+        <td>{{ r.actionability or '-' }}</td>
+        <td>{{ 'yes' if r.eligible_for_paper_trade else 'no' }}</td>
+        <td>{{ r.direction or '-' }}</td>
+        <td>{{ r.created | length }}</td>
+        <td>{{ r.updated | length }}</td>
+        <td>{{ r.closed | length }}</td>
+        <td>{{ 'yes' if r.duplicate else 'no' }}</td>
+        <td>{{ 'yes' if r.error else 'no' }}</td>
+        <td class="sm">{{ r.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if last_cycle.warnings %}
+  <ul class="warnings">
+    {% for w in last_cycle.warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  <p class="sm muted">{{ last_cycle.rationale }}</p>
+  {% else %}
+  <p class="sm muted">No cycle has been run yet in this session. Click <strong>Run Paper Trading Cycle</strong> above.</p>
+  {% endif %}
+</section>
+
 {# ---------------- WHY IS THIS IN ITS CURRENT STATE? ---------------- #}
 <section class="card why-card">
   <h2>Why is this in its current state?</h2>
