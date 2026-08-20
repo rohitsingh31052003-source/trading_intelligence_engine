@@ -1,12 +1,12 @@
 """
-Monitored instrument universe (index constituents).
+Monitored instrument universe (index constituents) — THIN backward-compat shim.
 
-This module is the single, maintainable definition of the universe of
-stocks the EXISTING scanner / workstation / paper-trading operations
-monitor. It expands the monitored STOCK universe from the original
-5-instrument default to the union of the current NIFTY 50 and SENSEX
-constituents, with duplicate companies removed (a company that appears
-in both indices is monitored exactly once).
+The single, maintainable definition of the monitored stock universe
+lives in the ENGINE-level :mod:`engine.config.universe` (dependency
+direction: dashboard -> engine; the engine never imports the dashboard).
+This module re-exports the engine lists so existing dashboard imports
+(``from dashboard.universe import ...``) keep working, and adds the
+provider-local Yahoo symbol map that is dashboard-provider specific.
 
 It contains NO trading, scoring, prediction, market-data or analysis
 logic — it is configuration data only. The existing strategy / scanner /
@@ -35,111 +35,14 @@ future performance and does NOT constitute a trading recommendation.
 
 from __future__ import annotations
 
-#: Current NIFTY 50 constituents (NSE trading symbols), alphabetically.
-NIFTY50_CONSTITUENTS: tuple[str, ...] = (
-    "ADANIENT",
-    "ADANIPORTS",
-    "APOLLOHOSP",
-    "ASIANPAINT",
-    "AXISBANK",
-    "BAJAJ-AUTO",
-    "BAJAJFINSV",
-    "BAJFINANCE",
-    "BEL",
-    "BHARTIARTL",
-    "CIPLA",
-    "COALINDIA",
-    "DRREDDY",
-    "EICHERMOT",
-    "ETERNAL",
-    "GRASIM",
-    "HCLTECH",
-    "HDFCBANK",
-    "HDFCLIFE",
-    "HINDALCO",
-    "HINDUNILVR",
-    "ICICIBANK",
-    "INDIGO",
-    "INFY",
-    "ITC",
-    "JIOFIN",
-    "JSWSTEEL",
-    "KOTAKBANK",
-    "LT",
-    "M&M",
-    "MARUTI",
-    "MAXHEALTH",
-    "NESTLEIND",
-    "NTPC",
-    "ONGC",
-    "POWERGRID",
-    "RELIANCE",
-    "SBILIFE",
-    "SBIN",
-    "SHRIRAMFIN",
-    "SUNPHARMA",
-    "TATACONSUM",
-    "TATASTEEL",
-    "TCS",
-    "TECHM",
-    "TITAN",
-    "TMPV",
-    "TRENT",
-    "ULTRACEMCO",
-    "WIPRO",
+from engine.config.universe import (
+    BENCHMARK_INDEX,
+    COMBINED_UNIVERSE,
+    MARKET_UNIVERSE,
+    NIFTY50_CONSTITUENTS,
+    SENSEX_CONSTITUENTS,
+    combined_universe,
 )
-
-#: Current SENSEX constituents (NSE trading symbols), alphabetically.
-#: All of them are also NIFTY 50 constituents, so they are removed as
-#: duplicates when the two index universes are combined.
-SENSEX_CONSTITUENTS: tuple[str, ...] = (
-    "ADANIPORTS",
-    "ASIANPAINT",
-    "AXISBANK",
-    "BAJAJFINSV",
-    "BAJFINANCE",
-    "BEL",
-    "BHARTIARTL",
-    "ETERNAL",
-    "HCLTECH",
-    "HDFCBANK",
-    "HINDUNILVR",
-    "ICICIBANK",
-    "INDIGO",
-    "INFY",
-    "ITC",
-    "KOTAKBANK",
-    "LT",
-    "M&M",
-    "MARUTI",
-    "NTPC",
-    "POWERGRID",
-    "RELIANCE",
-    "SBIN",
-    "SUNPHARMA",
-    "TATASTEEL",
-    "TCS",
-    "TECHM",
-    "TITAN",
-    "TRENT",
-    "ULTRACEMCO",
-)
-
-
-def combined_universe() -> tuple[str, ...]:
-    """NIFTY 50 ∪ SENSEX constituents, de-duplicated and sorted.
-
-    A company listed in both indices appears exactly once (the scanner
-    never scans the same company twice because of dual index
-    membership). The result is deterministically ordered so downstream
-    behaviour never depends on source-list ordering.
-    """
-
-    return tuple(sorted(set(NIFTY50_CONSTITUENTS) | set(SENSEX_CONSTITUENTS)))
-
-
-#: The combined, de-duplicated stock universe (NIFTY 50 ∪ SENSEX).
-COMBINED_UNIVERSE: tuple[str, ...] = combined_universe()
 
 #: Yahoo Finance symbols for every universe constituent. NSE-listed
 #: stocks use the ``<NSE symbol>.NS`` convention the existing Yahoo
@@ -151,7 +54,9 @@ UNIVERSE_YAHOO_SYMBOLS: dict[str, str] = {
 
 
 __all__ = [
+    "BENCHMARK_INDEX",
     "COMBINED_UNIVERSE",
+    "MARKET_UNIVERSE",
     "NIFTY50_CONSTITUENTS",
     "SENSEX_CONSTITUENTS",
     "UNIVERSE_YAHOO_SYMBOLS",

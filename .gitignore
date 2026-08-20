@@ -4,3 +4,7 @@ __pycache__/
 .vscode/
 *.pyc
 logs/
+# Historical market-data storage (Product Phase 6A) — never commit datasets
+data/historical/
+paper_trades/
+experiments/

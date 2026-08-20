@@ -685,6 +685,34 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             )
         return operations_cycle_view_to_jsonable(view)
 
+    # ------------------------------------------------------------
+    # HISTORICAL DATA STATUS (Product Phase 6A)
+    # ------------------------------------------------------------
+
+    @app.get("/historical-data", response_class=HTMLResponse)
+    def historical_data_page(request: Request) -> HTMLResponse:
+        """Minimal historical-data status surface (Phase 6A)."""
+
+        svc = _service()
+        datasets = svc.historical_datasets()
+        return templates.TemplateResponse(
+            request,
+            "historical_data.html",
+            {
+                "datasets": datasets,
+                "dataset_jsonable": svc.historical_dataset_jsonable(),
+            },
+        )
+
+    @app.get("/api/historical-data", response_class=JSONResponse)
+    def api_historical_data() -> dict:
+        svc = _service()
+        datasets = svc.historical_dataset_jsonable()
+        return {
+            "datasets": list(datasets),
+            "dataset_count": len(datasets),
+        }
+
     return app
 
 

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Historical Data — Trading Intelligence Dashboard{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Historical Market Data</h2>
+  <p class="muted">
+    Product Phase 6A — Historical Market Data Foundation. This page is a
+    minimal status surface for STORED historical datasets. It is DATA
+    FOUNDATION ONLY: no prediction, no historical win-rate / R / profit
+    factor / expected-return computation, and no trade recommendations.
+    The existing decision engine remains authoritative; this page does
+    not modify it.
+  </p>
+  <table class="scanner-table">
+    <thead>
+      <tr>
+        <th>Instrument</th>
+        <th>Timeframe</th>
+        <th>Dataset</th>
+        <th>Provider</th>
+        <th>Validation</th>
+        <th>Records</th>
+        <th>First</th>
+        <th>Last</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if datasets %}
+        {% for d in datasets %}
+        <tr class="actionability-{{ d.status }}">
+          <td>{{ d.instrument }}</td>
+          <td>{{ d.timeframe }}</td>
+          <td>{{ "available" if d.available else "unavailable" }}</td>
+          <td>{{ d.provider }}</td>
+          <td>{{ d.status }}</td>
+          <td>{{ d.record_count }}</td>
+          <td>{{ d.first_timestamp or "unavailable" }}</td>
+          <td>{{ d.last_timestamp or "unavailable" }}</td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="8" class="muted">
+            No historical datasets stored yet. Ingest via
+            <code>scripts/ingest_historical_data.py</code>.
+          </td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <p class="muted">
+    Ingest CLI: <code>python scripts/ingest_historical_data.py --instrument
+    NIFTY --timeframe 1D --start YYYY-MM-DD --end YYYY-MM-DD</code>.
+    Storage root: <code>./data/historical</code> (git-ignored). Datasets:
+    {{ dataset_jsonable | length }} stored.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Limitations</h2>
+  <ul class="muted">
+    <li>Data foundation only — this increment does NOT compute historical
+      evidence (win rate, average R, profit factor, expected return).</li>
+    <li>Historical data is descriptive and does not guarantee future
+      performance.</li>
+    <li>The default provider is a deterministic local provider
+      (synthetic, clearly labelled); wire a real historical provider
+      behind the same abstraction when one is configured.</li>
+    <li>Gap detection classifies plausible market closures vs unexpected
+      gaps using simple deterministic rules — it is NOT a full
+      exchange-calendar subsystem.</li>
+  </ul>
+</section>
+{% endblock %}

@@ -1802,6 +1802,79 @@ def operations_cycle_view_to_jsonable(view: OperationsCycleView) -> dict[str, An
     }
 
 
+# ============================================================
+# HISTORICAL DATA STATUS (Product Phase 6A)
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalDatasetStatusView:
+    """
+    Read-only presentation status for ONE stored historical dataset.
+
+    Product Phase 6A is DATA FOUNDATION ONLY: this view NEVER carries
+    win rates, average R, profit factors, expected returns, trade
+    recommendations or any historical "evidence" — those belong to the
+    FUTURE Product Phase 6B historical research corpus.
+
+    Every field is OBSERVED (reused verbatim from the historical-data
+    foundation's persisted records / provenance) — nothing is
+    recomputed in the dashboard.
+
+    Attributes:
+
+    instrument / timeframe
+        Stored identity.
+
+    available
+        Whether a stored dataset exists for this identity.
+
+    provider
+        Provider name of the most recent ingestion (from persisted
+        provenance), or "unavailable" when unknown.
+
+    status
+        The persisted :class:`HistoricalIngestionStatus` of the most
+        recent ingestion as a string, or "UNAVAILABLE" when nothing is
+        stored. Completeness is never claimed beyond that status.
+
+    record_count
+        Number of stored candles.
+
+    first_timestamp / last_timestamp
+        Stored series bounds (ISO strings), or None.
+
+    reason
+        Descriptive provenance reason (empty on success).
+    """
+
+    instrument: str
+    timeframe: str
+    available: bool
+    provider: str = "unavailable"
+    status: str = "UNAVAILABLE"
+    record_count: int = 0
+    first_timestamp: str | None = None
+    last_timestamp: str | None = None
+    reason: str = ""
+
+
+def historical_dataset_view_to_jsonable(view: HistoricalDatasetStatusView) -> dict:
+    """JSON projection of the historical dataset status view."""
+
+    return {
+        "instrument": view.instrument,
+        "timeframe": view.timeframe,
+        "available": view.available,
+        "provider": view.provider,
+        "status": view.status,
+        "record_count": view.record_count,
+        "first_timestamp": view.first_timestamp,
+        "last_timestamp": view.last_timestamp,
+        "reason": view.reason,
+    }
+
+
 __all__ = [
     "ActionabilityDetail",
     "ActionabilityState",
@@ -1810,6 +1883,7 @@ __all__ = [
     "DecisionView",
     "EvidenceView",
     "GeometryView",
+    "HistoricalDatasetStatusView",
     "InstrumentOperationRowView",
     "MarketOverviewView",
     "OperationsCycleView",
@@ -1821,6 +1895,7 @@ __all__ = [
     "WorkstationView",
     "derive_actionability",
     "derive_actionability_reason",
+    "historical_dataset_view_to_jsonable",
     "operations_cycle_view_to_jsonable",
     "paper_trade_journal_view_to_jsonable",
     "paper_trade_view_to_jsonable",

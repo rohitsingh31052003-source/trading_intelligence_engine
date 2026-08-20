@@ -84,6 +84,7 @@ from dashboard.views import (
     DecisionView,
     EvidenceView,
     GeometryView,
+    HistoricalDatasetStatusView,
     InstrumentOperationRowView,
     MarketOverviewView,
     OperationsCycleView,
@@ -95,6 +96,7 @@ from dashboard.views import (
     WorkstationView,
     derive_actionability,
     derive_actionability_reason,
+    historical_dataset_view_to_jsonable,
     operations_cycle_view_to_jsonable,
     paper_trade_journal_view_to_jsonable,
     paper_trade_view_to_jsonable,
@@ -104,6 +106,7 @@ from dashboard.views import (
     to_paper_trade_view,
     workstation_why,
 )
+from engine.data.historical_service import HistoricalMarketDataService
 from dashboard.watchlist import Watchlist
 
 #: Honest staleness threshold for the "data stale" warning. The latest
@@ -430,6 +433,7 @@ class DashboardAnalysisService:
         max_chart_candles: int = 120,
         freshness_config: FreshnessConfig | None = None,
         paper_trade_store: Any | None = None,
+        historical_service: "HistoricalMarketDataService | None" = None,
     ) -> None:
         # Freshness config is DATA QUALITY only — it never alters the
         # intelligence engine's decision semantics. When the provider was
@@ -494,6 +498,73 @@ class DashboardAnalysisService:
         # holds no market data and no future information; it is a read-only
         # projection of an already-completed cycle.
         self.last_operations_cycle: OperationsCycleView | None = None
+        # Product Phase 6A — historical market-data foundation. Optional:
+        # when supplied, the dashboard surfaces a minimal historical-data
+        # status page (which datasets are stored). It is DATA FOUNDATION
+        # ONLY — no prediction, no evidence, no trade recommendations.
+        # The existing decision / geometry / plan / lifecycle and the LIVE
+        # path remain AUTHORITATIVE and untouched.
+        self.historical_service = historical_service
+
+    # ------------------------------------------------------------
+    # PRODUCT PHASE 6A — HISTORICAL DATA STATUS
+    # ------------------------------------------------------------
+
+    def historical_datasets(self) -> tuple[HistoricalDatasetStatusView, ...]:
+        """
+        Status of every STORED historical dataset (read-only projection).
+
+        When no historical service is configured or nothing is stored,
+        returns an empty tuple (honest; never fabricates a dataset).
+        Only the /historical-data page consumes this. It NEVER
+        recomputes anything — it reads the store's own summaries +
+        persisted provenance.
+        """
+
+        svc = self.historical_service
+        if svc is None or svc.store is None:
+            return ()
+        views: list[HistoricalDatasetStatusView] = []
+        for info in svc.store.list_datasets():
+            provider = "unavailable"
+            status = "UNAVAILABLE"
+            reason = ""
+            try:
+                provenance = svc.store.load_provenance(info.instrument, info.timeframe)
+                if provenance:
+                    import json
+
+                    try:
+                        latest = json.loads(provenance[-1])
+                        provider = latest.get("provider", "unavailable")
+                        status = latest.get("status", "UNAVAILABLE")
+                        reason = latest.get("reason", "")
+                    except Exception:  # pragma: no cover - corrupted line tolerated
+                        pass
+            except Exception:  # pragma: no cover - provenance read failure tolerated
+                pass
+            views.append(
+                HistoricalDatasetStatusView(
+                    instrument=info.instrument,
+                    timeframe=info.timeframe,
+                    available=info.candle_count > 0,
+                    provider=provider,
+                    status=status,
+                    record_count=info.candle_count,
+                    first_timestamp=info.first_timestamp,
+                    last_timestamp=info.last_timestamp,
+                    reason=reason,
+                ),
+            )
+        return tuple(views)
+
+    def historical_dataset_jsonable(self) -> tuple[dict, ...]:
+        """JSON projection of :meth:`historical_datasets`."""
+
+        return tuple(
+            historical_dataset_view_to_jsonable(v)
+            for v in self.historical_datasets()
+        )
 
     # ------------------------------------------------------------
     # METADATA (for selectors)
@@ -1963,12 +2034,21 @@ def default_service(
     freshness_config: FreshnessConfig | None = None,
     symbol_map: dict[str, str] | None = None,
     paper_trade_store: Any | None = None,
+    historical_service: "HistoricalMarketDataService | None" = None,
 ) -> DashboardAnalysisService:
     """Build a dashboard service with sensible defaults.
 
     ``paper_trade_store`` is optional (Product Phase 5). When supplied,
     paper trades are persisted and survive restarts; when ``None`` the
     paper-trade service methods raise :class:`LookupError` on load.
+
+    ``historical_service`` is optional (Product Phase 6A). When
+    supplied, the /historical-data status surface lists stored
+    historical datasets; when ``None`` the surface reports an honest
+    empty state (nothing is fabricated). When omitted entirely the
+    default service builds a local deterministic historical service
+    with the default store so the status page is functional out of the
+    box with NO network / API-key dependency.
     """
 
     provider = make_provider(
@@ -1979,11 +2059,18 @@ def default_service(
     evidence_source = (
         EvidenceSource(evidence_report) if evidence_report is not None else None
     )
+    if historical_service is None:
+        from engine.data.historical_store import HistoricalDataStore
+
+        historical_service = HistoricalMarketDataService(
+            store=HistoricalDataStore(),
+        )
     return DashboardAnalysisService(
         provider=provider,
         evidence_source=evidence_source,
         freshness_config=freshness_config,
         paper_trade_store=paper_trade_store,
+        historical_service=historical_service,
     )
 
 

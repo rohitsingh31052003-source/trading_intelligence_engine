@@ -11,7 +11,8 @@ roadmap is: Product Phase 1 (live / near-live market-data integration) — COMPL
 Product Phase 2 (multi-instrument scanner & watchlist) — COMPLETE;
 Product Phase 3 (live trading workstation / dashboard) — COMPLETE;
 Product Phase 4 (risk & trade planning) — COMPLETE; Product Phase 5 (paper trading
-& real-world validation) — COMPLETE.
+& real-world validation) — COMPLETE; Product Phase 6A (historical market-data
+foundation) — COMPLETE.
 
 The architecture is DESCRIPTIVE ONLY: it provides technical-analysis and
 historical research context, does not guarantee future performance, and does not
@@ -385,6 +386,84 @@ curl -X POST "http://127.0.0.1:8000/api/paper-trading/run-once?instruments=NIFTY
   credentials; no live execution. Paper-trade results are observational
   validation and do not guarantee future performance or constitute financial
   advice.
+
+## Historical market data foundation (Product Phase 6A)
+
+The historical-data foundation (`engine/data/historical_*`) is the first
+increment of the historical-market-intelligence groundwork: a reliable,
+deterministic, validated historical OHLCV data layer that will later support
+historical setup research and evidence generation (Product Phase 6B). It is
+**DATA FOUNDATION ONLY** — it does NOT call the decision engine, does NOT
+generate trade candidates or decisions, does NOT create paper trades, and does
+NOT compute historical "evidence" (win rate / average R / profit factor /
+expected return / setup success probability).
+
+```bash
+# Ingest a bounded historical window (deterministic local provider by default):
+python scripts/ingest_historical_data.py \
+    --instrument NIFTY --timeframe 1D --start 2024-01-01 --end 2024-12-31
+```
+
+- **Clean architecture** — Historical Provider → Historical Market Data Service
+  → Canonical OHLCV → Validation / normalisation → Dataset persistence →
+  (future research/evidence layer). The provider is replaceable behind the
+  `HistoricalMarketDataProvider` protocol; the service depends only on the
+  protocol.
+- **Providers** — `local-deterministic` (default; clearly-labelled synthetic
+  series derived from a hash of instrument+timeframe; no network / no API key),
+  `in-memory-import` (caller-supplied records for tests / imports), and an
+  optional `yahoo-historical` adapter (reuses the existing
+  `YahooFinanceProvider.get_history`; graceful when yfinance/pandas are
+  unavailable). Yahoo remains the LIVE/near-live provider; the historical
+  provider is a separate, additive path.
+- **Canonical candle model** — reuses the existing `OHLCVCandle`; timestamps are
+  normalized to UTC and naive timestamps are rejected (never silently accepted).
+- **Typed request model** — `HistoricalDataRequest` (instrument / timeframe /
+  start / end / optional provider / adjusted / metadata / `allow_future_end`).
+  Validation: non-empty instrument, timezone-aware timestamps, start < end,
+  supported timeframe; a future `end` is rejected unless the caller deliberately
+  sets `allow_future_end=True` (controlled imports only).
+- **Validation** — explicit detection of duplicate timestamps, out-of-order
+  sequences, future-dated candles, naive timestamps, invalid OHLC relationships,
+  negative volume, missing required OHLC/timestamp values, unsupported
+  instrument/timeframe, empty provider responses, and malformed provider
+  responses. Invalid records are rejected — never silently repaired, never
+  fabricated.
+- **Gap detection** — deterministic classification of `POSSIBLE_MARKET_CLOSURE`
+  (weekend / short non-trading window / plausible holiday span) vs
+  `UNEXPECTED_GAP`. It is intentionally NOT a full exchange-calendar subsystem;
+  missing candles are reported, never synthesized.
+- **Persistence** — local filesystem JSON under `./data/historical/` (git-ignored;
+  one `candles.json` per instrument+timeframe plus an append-only
+  `provenance.jsonl` per ingestion). Ingestion MERGES by candle timestamp so the
+  same ingestion run twice creates NO duplicates. Atomic writes; safe-id
+  validation; schema-versioned.
+- **Provenance** — every ingestion records provider / instrument / timeframe /
+  requested window / actual first+last accepted candle / ingestion timestamp /
+  received-accepted-rejected counts / validation status (`AVAILABLE` / `EMPTY` /
+  `PARTIAL` / `INVALID` / `ERROR`). Data is never claimed complete beyond that
+  status.
+- **Research universe** — the default instrument allow-list (NIFTY / RELIANCE /
+  TCS / HDFCBANK / ICICIBANK) is a configurable `ResearchUniverse`, not provider
+  hard-coding; instruments can be added without touching the ingestion engine.
+- **Look-ahead protection** — ingestion rejects future-dated candles relative to
+  the caller's reference "now"; `load_historical(..., evaluation_time=T)`
+  returns only candles `<= T`; the public API accepts no hidden future-candle
+  parameter; `OutcomeEvaluator` and `HistoricalEvaluationPipeline` are never
+  called during ingestion (patch-to-raise tests prove it).
+- **Dashboard status surface** — `GET /historical-data` (HTML) and
+  `GET /api/historical-data` (JSON) list stored datasets with provider / status /
+  record count / first+last timestamp. The page deliberately shows NO win rates
+  or trade recommendations — Phase 6A does not calculate them.
+- **LIMITATIONS** — historical evidence / research is a FUTURE phase (6B); the
+  default provider is a clearly-labelled deterministic synthetic series (wire a
+  real vendor behind the same abstraction when configured); gap detection is a
+  simple deterministic heuristic, not an exchange calendar.
+
+Roadmap:
+
+- Product Phase 6A — HISTORICAL MARKET DATA FOUNDATION — COMPLETE
+- Product Phase 6B — HISTORICAL RESEARCH CORPUS — FUTURE (not started)
 
 ## Supported local data / timeframes
 
