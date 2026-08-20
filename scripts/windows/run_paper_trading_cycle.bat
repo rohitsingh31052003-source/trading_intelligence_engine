@@ -15,6 +15,8 @@ rem    4. Prevents overlapping instances via an atomic lock directory.
 rem    5. Appends all output to a per-day log file under logs\paper_trading.
 rem    6. Writes a trace line BEFORE anything can fail, so scheduled-task
 rem       failures are always diagnosable.
+rem    7. Holds a session-scoped keep-awake power request (system only, NOT
+rem       display) from the first cycle until just after the final cycle.
 rem
 rem  Any extra arguments are passed through to run_paper_trading_cycle.py
 rem  (e.g. --instruments NIFTY,RELIANCE --capital 100000 --risk-percent 1).
@@ -59,15 +61,20 @@ goto acquire_lock
 :check_stale_lock
 rem A stale lock can survive a crash / killed run. Clear it only when it is
 rem clearly stale (older than 20 minutes; the scheduled task is limited to
-rem 14 minutes, so 20 minutes is a safe margin). Uses the ABSOLUTE path to
-rem the built-in Windows PowerShell 5.1 executable (always present on
-rem Windows; PATH is unreliable under Task Scheduler). If PowerShell cannot
-rem run, assume STALE: an active cycle finishes within 14 minutes anyway,
-rem and task-level IgnoreNew already prevents a duplicate start.
-set "PS_EXE=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+rem 14 minutes, so 20 minutes is a safe margin). Uses the ABSOLUTE %WINDIR%
+rem path to the built-in Windows PowerShell 5.1 executable (always present
+rem on Windows; PATH is unreliable under Task Scheduler). If PowerShell
+rem cannot run, assume STALE: an active cycle finishes within 14 minutes
+rem anyway, and task-level IgnoreNew already prevents a duplicate start.
+rem QUOTING NOTE: inside for /f ('...') the executable path must NOT be
+rem wrapped in quotes - cmd /c then misapplies its strip-outer-quotes rule
+rem and mangles the line ("...powershell.exe" -NoProfile -Command "if is
+rem not recognized"). The path contains no spaces, so it stays unquoted;
+rem only the PowerShell -Command argument is quoted.
+set "PS_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "LOCK_STATE=STALE"
 if exist "%PS_EXE%" (
-    for /f %%i in ('"%PS_EXE%" -NoProfile -Command "if ((Get-Date) - (Get-Item -LiteralPath '%LOCK_DIR%').CreationTime -gt [TimeSpan]::FromMinutes(20)) {'STALE'} else {'ACTIVE'}"') do set "LOCK_STATE=%%i"
+    for /f %%i in ('%PS_EXE% -NoProfile -Command "if ((Get-Date) - (Get-Item -LiteralPath '%LOCK_DIR%').CreationTime -gt [TimeSpan]::FromMinutes(20)) {'STALE'} else {'ACTIVE'}"') do set "LOCK_STATE=%%i"
 )
 if /i "%LOCK_STATE%"=="STALE" rmdir "%LOCK_DIR%" 2>nul
 
@@ -89,6 +96,32 @@ rem --- Python interpreter: project .venv first, PATH fallback ---------------
 set "PYTHON=%PROJECT_ROOT%\.venv\Scripts\python.exe"
 if not exist "%PYTHON%" set "PYTHON=python"
 
+rem --- Session keep-awake (ONE helper for the whole 09:15-16:00 session) ----
+rem     The first cycle of the day starts ONE keep-awake helper holding
+rem     ES_CONTINUOUS|ES_SYSTEM_REQUIRED (deliberately NOT ES_DISPLAY_REQUIRED:
+rem     the screen may still turn off). It runs CONTINUOUSLY across all cycles
+rem     and stops itself at SESSION_END (just after the final 16:00 cycle,
+rem     whose Task Scheduler execution limit is 14 minutes). If the helper
+rem     crashes or is killed, Windows auto-releases the power request on
+rem     process exit and the next cycle (<= 15 minutes later) starts a fresh
+rem     instance - detected via the PID file + tasklist. No power plan is
+rem     modified; nothing persists after the helper exits.
+set "SESSION_END=16:15"
+set "AWAKE_PID_FILE=%LOG_DIR%\session_keep_awake.pid"
+if not exist "%AWAKE_PID_FILE%" goto awake_start
+set /p AWAKE_PID=<"%AWAKE_PID_FILE%"
+if not defined AWAKE_PID goto awake_start
+"%WINDIR%\System32\tasklist.exe" /FI "PID eq %AWAKE_PID%" /NH 2>nul | "%WINDIR%\System32\find.exe" /I "python" >nul
+if errorlevel 1 goto awake_start
+echo [%DATE% %TIME%] keep-awake already running (pid %AWAKE_PID%) >> "%LOG_FILE%"
+goto awake_done
+
+:awake_start
+if exist "%AWAKE_PID_FILE%" del /f /q "%AWAKE_PID_FILE%" 2>nul
+start "keep-awake" /min "%PYTHON%" "%SCRIPT_DIR%keep_awake.py" --pid-file "%AWAKE_PID_FILE%" --until %SESSION_END% --max-minutes 600
+echo [%DATE% %TIME%] keep-awake started for session (until %SESSION_END%) >> "%LOG_FILE%"
+
+:awake_done
 rem --- Run ONE cycle, appending stdout + stderr to the log ------------------
 echo [%DATE% %TIME%] cycle start (provider: %DASHBOARD_PROVIDER%, python: %PYTHON%) >> "%LOG_FILE%"
 "%PYTHON%" "%PROJECT_ROOT%\scripts\run_paper_trading_cycle.py" %* >> "%LOG_FILE%" 2>&1
