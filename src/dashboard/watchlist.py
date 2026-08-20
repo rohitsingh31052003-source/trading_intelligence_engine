@@ -35,12 +35,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
-#: Default watchlist matching the local deterministic fixture set
-#: (Sprint 11V). Chosen so the scanner has something useful to scan out
-#: of the box on the fixture provider, without fabricating instruments.
-DEFAULT_WATCHLIST: tuple[str, ...] = (
-    "NIFTY", "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK",
-)
+from dashboard.universe import COMBINED_UNIVERSE
+
+#: Default monitored universe: the NIFTY 50 ∪ SENSEX constituents
+#: (de-duplicated; see :mod:`dashboard.universe`), plus the pre-existing
+#: NIFTY benchmark index instrument that was monitored before the
+#: universe expansion. On the local fixture provider only the fixture
+#: instruments have data; every other instrument is reported honestly
+#: as unavailable (failure isolation), never fabricated. The live
+#: provider resolves every constituent via its symbol map.
+DEFAULT_WATCHLIST: tuple[str, ...] = ("NIFTY",) + COMBINED_UNIVERSE
 
 
 def _validate_name(name: str) -> str:

@@ -44,13 +44,13 @@ for _path in (str(_ROOT / "src"), str(_ROOT)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-DEFAULT_INSTRUMENTS: tuple[str, ...] = (
-    "NIFTY",
-    "RELIANCE",
-    "TCS",
-    "HDFCBANK",
-    "ICICIBANK",
-)
+from dashboard.universe import COMBINED_UNIVERSE  # noqa: E402
+
+#: Default monitored universe: the NIFTY 50 ∪ SENSEX constituents
+#: (de-duplicated) plus the pre-existing NIFTY benchmark index
+#: instrument. This only widens WHAT the existing strategy is
+#: evaluated on — the strategy itself is unchanged.
+DEFAULT_INSTRUMENTS: tuple[str, ...] = ("NIFTY",) + COMBINED_UNIVERSE
 DEFAULT_TIMEFRAME = "15m"
 DEFAULT_CAPITAL = "100000"
 DEFAULT_RISK_PERCENT = "1"

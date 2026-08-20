@@ -49,6 +49,7 @@ from fastapi.testclient import TestClient
 
 from dashboard.app import create_app
 from dashboard.data_provider import (
+    FIXTURE_INSTRUMENTS,
     FreshnessConfig,
     FreshnessState,
     InstrumentSeries,
@@ -328,7 +329,7 @@ class TestSingleInstrumentScan:
 class TestMultiInstrumentScan:
     def test_default_watchlist_scans_all(self, service):
         scan = service.scan_watchlist(ScanRequest(setup_timeframe="15m"))
-        assert scan.total == 5
+        assert scan.total == len(DEFAULT_WATCHLIST)
         scanned = {r.instrument for r in scan.rows}
         assert scanned == set(DEFAULT_WATCHLIST)
 
@@ -350,7 +351,15 @@ class TestMultiInstrumentScan:
 
 class TestMultiTimeframeScan:
     def test_supported_timeframe(self, service):
-        scan = service.scan_watchlist(ScanRequest(setup_timeframe="15m"))
+        # Scope to the fixture-covered instruments: the monitored
+        # universe is larger than the local fixture set, and the fixture
+        # provider honestly reports the rest as unavailable.
+        scan = service.scan_watchlist(
+            ScanRequest(
+                watchlist=Watchlist(FIXTURE_INSTRUMENTS),
+                setup_timeframe="15m",
+            ),
+        )
         assert scan.setup_timeframe == "15m"
         assert scan.errored == 0
 
@@ -508,7 +517,15 @@ class TestFreshData:
 class TestStaleData:
     def test_fixture_data_is_stale(self, service):
         # Fixture data is historical -> STALE (data quality only).
-        scan = service.scan_watchlist(ScanRequest(setup_timeframe="15m"))
+        # Scope to the fixture-covered instruments: the monitored
+        # universe is larger than the local fixture set, and the fixture
+        # provider honestly reports the rest as unavailable.
+        scan = service.scan_watchlist(
+            ScanRequest(
+                watchlist=Watchlist(FIXTURE_INSTRUMENTS),
+                setup_timeframe="15m",
+            ),
+        )
         for row in scan.rows:
             if not row.error:
                 assert row.freshness_state in ("STALE", "CURRENT")
@@ -591,7 +608,7 @@ class TestNoLookAhead:
 
         monkeypatch.setattr(ho.OutcomeEvaluator, "evaluate", _boom)
         scan = service.scan_watchlist(ScanRequest(setup_timeframe="15m"))
-        assert scan.total == 5
+        assert scan.total == len(DEFAULT_WATCHLIST)
 
     def test_scanner_does_not_call_pipeline(self, service, monkeypatch):
         import engine.pipeline.historical_pipeline as hp
@@ -601,7 +618,7 @@ class TestNoLookAhead:
 
         monkeypatch.setattr(hp.HistoricalEvaluationPipeline, "evaluate", _boom)
         scan = service.scan_watchlist(ScanRequest(setup_timeframe="15m"))
-        assert scan.total == 5
+        assert scan.total == len(DEFAULT_WATCHLIST)
 
     def test_scan_watchlist_no_future_argument(self):
         sig = inspect.signature(DashboardAnalysisService.scan_watchlist)
@@ -860,7 +877,9 @@ class TestDashboardRendering:
     def test_scan_page_displays_instruments(self, client):
         r = client.get("/scan")
         for inst in DEFAULT_WATCHLIST:
-            assert inst in r.text
+            # Jinja escapes HTML-special characters (e.g. "M&M" renders
+            # as "M&amp;M").
+            assert inst.replace("&", "&amp;") in r.text
 
     def test_scan_page_custom_instruments(self, client):
         r = client.get("/scan?instruments=NIFTY,TCS")

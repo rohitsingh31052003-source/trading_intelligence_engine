@@ -130,7 +130,11 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def demo_default_watchlist_scan(svc):
     print("\n1. Scanning the default watchlist (multiple instruments)")
     scan = svc.scan_watchlist(ScanRequest(setup_timeframe="15m"))
-    check("scans all 5 default instruments", scan.total == 5, f"total={scan.total}")
+    check(
+        "scans all default-universe instruments",
+        scan.total == len(DEFAULT_WATCHLIST),
+        f"total={scan.total}",
+    )
     check("rows == total", len(scan.rows) == scan.total)
     check("counts reconcile", scan.analyzed + scan.errored == scan.total)
     print("   rows (presentational order):")
@@ -248,7 +252,10 @@ def demo_no_look_ahead(svc, restore_outcome, restore_pipeline, patch_outcome, pa
     patch_pipeline()
     try:
         scan = svc.scan_watchlist(ScanRequest(setup_timeframe="15m"))
-        check("scanner works with evaluator+pipeline patched to raise", scan.total == 5)
+        check(
+            "scanner works with evaluator+pipeline patched to raise",
+            scan.total == len(DEFAULT_WATCHLIST),
+        )
     finally:
         # Restore BEFORE the pipeline-baseline demo runs the real pipeline.
         restore_outcome()

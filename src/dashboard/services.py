@@ -504,9 +504,11 @@ class DashboardAnalysisService:
 
         if isinstance(self.provider, FixtureDataProvider):
             return FIXTURE_INSTRUMENTS
-        # Live providers: expose a sensible default set; the actual
-        # availability is checked per-request (graceful on miss).
-        return FIXTURE_INSTRUMENTS
+        # Live providers: expose the monitored universe (NIFTY 50 ∪
+        # SENSEX constituents, de-duplicated, plus the benchmark index);
+        # the actual availability is checked per-request (graceful on
+        # miss).
+        return self.default_watchlist().instruments
 
     def available_timeframes(self) -> tuple[str, ...]:
         """Timeframe labels the dashboard offers for selection."""
@@ -893,8 +895,12 @@ class DashboardAnalysisService:
     def default_watchlist(self) -> Watchlist:
         """The watchlist the scanner uses when none is supplied.
 
-        Defaults to the local fixture instrument set so the scanner has
-        something useful to scan out of the box on the fixture provider.
+        The monitored universe is the NIFTY 50 ∪ SENSEX constituents
+        (de-duplicated) plus the pre-existing NIFTY benchmark index
+        instrument (see :data:`dashboard.watchlist.DEFAULT_WATCHLIST`).
+        On the fixture provider only the fixture instruments have data;
+        every other constituent is reported honestly as unavailable
+        (failure isolation), never fabricated.
         """
 
         return Watchlist.default()

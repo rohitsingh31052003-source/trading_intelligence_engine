@@ -78,7 +78,7 @@ def _format(view: OperationsCycleView) -> str:
 class TestArgumentParsing:
     def test_defaults(self):
         args = cli.parse_args([])
-        assert args.instruments == "NIFTY,RELIANCE,TCS,HDFCBANK,ICICIBANK"
+        assert args.instruments == ",".join(cli.DEFAULT_INSTRUMENTS)
         assert args.timeframe == "15m"
         assert args.capital == "100000"
         assert args.risk_percent == "1"
@@ -293,7 +293,9 @@ class TestEndToEnd:
         assert "Cycle id:                  opcycle-" in out
         for instrument in cli.DEFAULT_INSTRUMENTS:
             assert f"  {instrument}\n" in out
-        assert "Instruments scanned:       5" in out
+        assert (
+            f"Instruments scanned:       {len(cli.DEFAULT_INSTRUMENTS)}\n"
+        ) in out
         assert "Trades created:" in out
         assert "Trades updated:" in out
         assert "Trades closed:" in out

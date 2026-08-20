@@ -68,6 +68,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Protocol, Sequence
 
+from dashboard.universe import UNIVERSE_YAHOO_SYMBOLS
 from engine.data.validator import DataValidator
 from engine.models.ohlcv import OHLCVCandle
 
@@ -754,18 +755,17 @@ class YahooDataProvider:
 
     #: Default mapping from canonical dashboard instruments to Yahoo
     #: symbols. Indian index futures / stocks use the ``.NS`` / ``.BO``
-    #: suffix convention; indices use the ``^`` prefix. This mapping is
-    #: intentionally ISOLATED here — it never enters the engine.
+    #: suffix convention; indices use the ``^`` prefix. Every NIFTY 50 ∪
+    #: SENSEX constituent resolves to its ``<NSE symbol>.NS`` Yahoo
+    #: symbol (see :data:`dashboard.universe.UNIVERSE_YAHOO_SYMBOLS`).
+    #: This mapping is intentionally ISOLATED here — it never enters
+    #: the engine.
     YAHOO_SYMBOL_MAP: dict[str, str] = {
         "NIFTY": "^NSEI",
         "BANKNIFTY": "^NSEBANK",
-        "RELIANCE": "RELIANCE.NS",
-        "TCS": "TCS.NS",
-        "HDFCBANK": "HDFCBANK.NS",
-        "ICICIBANK": "ICICIBANK.NS",
-        "INFY": "INFY.NS",
         "AAPL": "AAPL",
         "MSFT": "MSFT",
+        **UNIVERSE_YAHOO_SYMBOLS,
     }
 
     #: Yahoo-supported intervals (subject to history limits). Only these

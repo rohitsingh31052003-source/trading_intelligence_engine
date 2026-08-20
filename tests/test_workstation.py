@@ -80,7 +80,7 @@ from dashboard.views import (
     workstation_view_to_jsonable,
     workstation_why,
 )
-from dashboard.watchlist import Watchlist
+from dashboard.watchlist import DEFAULT_WATCHLIST, Watchlist
 from engine.data.historical_fixtures import historical_candles_by_instrument
 from engine.models.ohlcv import OHLCVCandle
 
@@ -1076,7 +1076,7 @@ class TestScannerRegression:
     def test_scan_route_unchanged(self, client):
         r = client.get("/api/scan")
         j = r.json()
-        assert j["total"] == 5  # default fixture watchlist
+        assert j["total"] == len(DEFAULT_WATCHLIST)  # default universe
 
     def test_scan_rows_have_workstation_link_in_html(self, client):
         r = client.get("/scan")
