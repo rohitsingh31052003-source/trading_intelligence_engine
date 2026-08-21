@@ -1,0 +1,163 @@
+# Product Phase 6E — Historical + Current Intelligence
+
+## What Phase 6E does
+
+Phase 6E integrates the completed Phase 6D historical setup research output
+with the existing current-market analysis so the system can present relevant
+historical evidence **alongside** the current market state:
+
+```
+CURRENT MARKET                    HISTORICAL RESEARCH (Phase 6D, persisted)
+   | current structure                 | comparable historical setups
+   | current decision                  | historical outcomes
+   | current geometry                  | historical statistics
+   |                                   | evidence strength
+   +---------------+-------------------+
+                   v
+     CURRENT ASSESSMENT + HISTORICAL CONTEXT
+     (combined intelligence view)
+```
+
+Phase 6E is an **evidence integration layer**, not a new trading decision
+engine. It answers:
+
+> "Given the current instrument, timeframe, setup/structure characteristics
+> and evaluation time T, what historical evidence is available for
+> comparable setups?"
+
+> Historical evidence is descriptive and observational. It is not a
+> prediction, recommendation, or guarantee of future performance.
+
+## What historical evidence means
+
+The historical context attached to a current assessment carries ONLY what the
+persisted Phase 6D research actually supports:
+
+* instrument / timeframes / evaluation timestamp (identity at `T`)
+* the deterministic matching/comparison key
+* number of comparable historical occurrences
+* outcome counts (completed / ambiguous / unresolved)
+* the **reused** Sprint 11X `HistoricalPerformanceStatistics` over the matched
+  already-resolved outcomes (win rate, average/median realized R, profit
+  factor, average MFE/MAE — `None` when unavailable)
+* the **reused** Sprint 11Y `EvidenceStrength` vocabulary
+  (`INSUFFICIENT` / `WEAK` / `MODERATE` / `STRONG`)
+* provenance: the Phase 6D research ids the context was derived from
+* explicit limitations
+
+Nothing is invented. If no evidence is available the status is explicit —
+`NO_MATCH` (research exists, nothing comparable) or `RESEARCH_UNAVAILABLE`
+(no persisted research for the pair) — with `strength = None` and
+`statistics = None`. Unavailable is NEVER represented by empty/default
+statistics that could be misread as evidence.
+
+## How historical evidence is matched
+
+`HistoricalEvidenceLookupEngine.lookup(HistoricalEvidenceRequest)` reads
+persisted Phase 6D `SetupResearchResult` objects from the existing
+`SetupResearchStore` — it **never re-runs** the Phase 6D research process
+(detection, outcome evaluation or aggregation).
+
+Matching uses the existing Phase 6D setup/research vocabulary, with logical
+AND over the active dimensions:
+
+* instrument + setup/context timeframe (canonicalized, `15M` == `15m`)
+* `setup_type` (Sprint 11R)
+* `direction` (LONG/SHORT)
+* `trend_state` / `range_state` (Sprint 11P)
+* `mtf_alignment` (Sprint 11U)
+
+An empty/`NONE`/`UNKNOWN` current label is NOT a comparison dimension — the
+dashboard matches only on what is actually known. No new indicators or
+strategy definitions were introduced.
+
+## Point-in-time guarantees (exact)
+
+* The matching criteria carry ONLY information legitimately available at the
+  current evaluation time `T`.
+* A historical occurrence is eligible only when it occurred **strictly
+  before** `T`.
+* Of those, an occurrence contributes to statistics/strength only when its
+  reused Sprint 11W outcome was already known at `T`
+  (`outcome_timestamp <= T`, or a terminal state with no outcome timestamp —
+  `BOTH_TOUCHED` / `EXPIRED` / `NO_GEOMETRY` / `INSUFFICIENT_DATA`).
+* The lookup NEVER reads candles and accepts **no** `future` /
+  `future_candles` / `lookahead` parameter. It works with the Sprint 11W
+  `OutcomeEvaluator` and the historical pipeline patched to raise
+  (regression-tested).
+* Identical inputs always produce an identical context (deterministic
+  `context_id`, no wall-clock, no randomness).
+
+## Evidence-strength interpretation
+
+The strength classification reuses the Phase 6D sample gates (which mirror
+the Sprint 11Y semantics). **Sample size is a hard gate**: a small sample is
+always `INSUFFICIENT`, regardless of how favourable the observed result is.
+Even `STRONG` evidence is descriptive and does NOT guarantee future
+performance. No expectancy, confidence, or statistical-significance claim is
+made.
+
+## Why historical evidence does not override the decision engine
+
+The existing decision architecture (Sprints 11S/11T, the dashboard
+actionability mirror, the Product Phase 4 trade plan, the Product Phase 5
+paper-trading operations) remains **authoritative**:
+
+```
+Current decision = REJECTED, Historical evidence = STRONG   -> REJECTED
+Current decision = READY_FOR_REVIEW, evidence = UNAVAILABLE -> READY_FOR_REVIEW
+Current decision = NO_OPPORTUNITY, evidence = STRONG        -> NO_OPPORTUNITY
+```
+
+Historical evidence never creates, modifies, upgrades, downgrades or
+overrides the existing decision classification, actionability, direction,
+geometry, trade plan or paper-trading eligibility. Regression tests compare
+the full current view with and without the evidence source attached.
+
+## Why historical evidence does not constitute prediction
+
+The statistics describe what happened after comparable historical
+occurrences **in the persisted research corpus**. They say nothing about
+what will happen next. Phase 6E performs no ML, no probability estimation,
+no forecasting and no statistical hypothesis test. It is contextual
+intelligence for a human reviewer.
+
+## Relationship between Phase 6C, 6D and 6E
+
+* **Phase 6C** builds the point-in-time historical research corpus
+  (`<= T` setup / `< T` context slices).
+* **Phase 6D** searches that corpus for occurrences of the existing setup
+  architecture and measures forward-only outcomes, aggregating descriptive
+  evidence; results are persisted (`SetupResearchStore`).
+* **Phase 6E** looks up that persisted research for situations comparable to
+  the CURRENT assessment and attaches it to the current view
+  (`DashboardTradeView.historical_context`, additive; `to_jsonable` gains an
+  additive `historical_context` block; existing API fields unchanged).
+
+## What remains for Phase 6F
+
+Phase 6F — Live Paper Validation — comes only after Phase 6E is fully tested
+and stable: it will observe how current opportunities (with their attached
+historical context) resolve going forward in paper trading, WITHOUT changing
+the authoritative decision, geometry, plan or lifecycle semantics. Phase 6F
+is NOT started here.
+
+## Limitations
+
+* Descriptive / observational only — a large historical sample does NOT imply
+  future profitability.
+* Evidence availability depends on pre-computed Phase 6D research; without a
+  persisted research store the context is honestly `UNAVAILABLE`.
+* No live-trading, broker, execution, position-sizing or strategy changes.
+
+## What Phase 6E does NOT do
+
+* Does NOT create a new trading strategy, decision engine or scoring layer.
+* Does NOT modify the authoritative decision semantics, the TradeCandidate
+  geometry, the TradePlan calculation, the paper-trading lifecycle or the
+  live scheduler.
+* Does NOT introduce prediction, ML, LLM or probability logic.
+* Does NOT modify providers, the Yahoo request-window logic or the Phase
+  6A/6B ingestion path.
+* Does NOT fabricate evidence, statistics, entry/stop/target levels or paper
+  trades.

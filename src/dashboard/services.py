@@ -84,6 +84,7 @@ from dashboard.views import (
     DecisionView,
     EvidenceView,
     GeometryView,
+    HistoricalContextView,
     HistoricalDatasetStatusView,
     InstrumentOperationRowView,
     MarketOverviewView,
@@ -434,6 +435,7 @@ class DashboardAnalysisService:
         freshness_config: FreshnessConfig | None = None,
         paper_trade_store: Any | None = None,
         historical_service: "HistoricalMarketDataService | None" = None,
+        historical_evidence_source: "HistoricalEvidenceSource | None" = None,
     ) -> None:
         # Freshness config is DATA QUALITY only — it never alters the
         # intelligence engine's decision semantics. When the provider was
@@ -505,6 +507,14 @@ class DashboardAnalysisService:
         # The existing decision / geometry / plan / lifecycle and the LIVE
         # path remain AUTHORITATIVE and untouched.
         self.historical_service = historical_service
+        # Product Phase 6E — historical + current intelligence. Optional:
+        # when supplied, the dashboard attaches a DESCRIPTIVE historical
+        # evidence context (comparable historical setups from the
+        # persisted Phase 6D research) to the current assessment. It is
+        # CONTEXTUAL ONLY — it NEVER modifies the authoritative existing
+        # decision / actionability / geometry / trade plan /
+        # paper-trading eligibility and NEVER fabricates evidence.
+        self.historical_evidence_source = historical_evidence_source
 
     # ------------------------------------------------------------
     # PRODUCT PHASE 6A — HISTORICAL DATA STATUS
@@ -1478,6 +1488,11 @@ class DashboardAnalysisService:
         # --- Evidence view (reused 11Y/11Z/12A/12B/12E or honest unavailable) ---
         evidence_view = self._build_evidence_view(request, result, candidate)
 
+        # --- Historical context view (Phase 6E; additive, contextual only) ---
+        historical_context_view = self._build_historical_context_view(
+            request, setup_tf, ctx_tf, result, candidate,
+        )
+
         # --- Actionability (derived presentation mirror) ---
         # Evidence strength is surfaced to the actionability layer ONLY when
         # an offline corpus is attached; a missing corpus is NOT treated as
@@ -1561,6 +1576,7 @@ class DashboardAnalysisService:
             actionability=actionability,
             actionability_detail=actionability_detail,
             data_source=data_source_view,
+            historical_context=historical_context_view,
             reason=result.reason or "",
             warnings=tuple(warnings),
         )
@@ -1648,6 +1664,42 @@ class DashboardAnalysisService:
                 ),
             )
         return self.evidence_source.evidence_for(request, result, candidate)
+
+    def _build_historical_context_view(
+        self,
+        request: AnalysisRequest,
+        setup_tf: str,
+        ctx_tf: str,
+        result: InstrumentScanResult,
+        candidate: Any,
+    ) -> HistoricalContextView:
+        """Product Phase 6E — attach the historical evidence context.
+
+        CONTEXTUAL ONLY: the lookup NEVER modifies the authoritative
+        existing decision / geometry / plan. When no Phase 6D research
+        store is attached, the honest "UNAVAILABLE" view is returned —
+        never fabricated evidence. Failures are isolated (a lookup
+        problem must never corrupt the current assessment).
+        """
+
+        if self.historical_evidence_source is None:
+            return HistoricalContextView(
+                limitations=(
+                    "No Phase 6D historical research store attached. "
+                    "Historical evidence is UNAVAILABLE (never fabricated)."
+                ),
+            )
+        try:
+            return self.historical_evidence_source.context_for(
+                request, setup_tf, ctx_tf, result, candidate,
+            )
+        except Exception:  # noqa: BLE001 - failure isolation
+            return HistoricalContextView(
+                limitations=(
+                    "Historical evidence lookup failed; historical "
+                    "evidence is UNAVAILABLE (never fabricated)."
+                ),
+            )
 
     @staticmethod
     def _build_data_source_view(
@@ -2027,6 +2079,118 @@ class EvidenceSource:
         )
 
 
+class HistoricalEvidenceSource:
+    """
+    Optional Phase 6D historical evidence source (Product Phase 6E).
+
+    The dashboard does NOT run research. A caller persists Phase 6D
+    :class:`~engine.models.setup_research.SetupResearchResult` objects
+    in a :class:`~engine.data.setup_research_store.SetupResearchStore`
+    and attaches the store here; the dashboard then reuses the Phase 6E
+    :class:`~engine.data.historical_evidence_lookup.HistoricalEvidenceLookupEngine`
+    to surface the historical evidence available for setups COMPARABLE
+    to the current assessment — WITHOUT re-running research, re-reading
+    candles or using future information.
+
+    The historical context is CONTEXTUAL ONLY: it NEVER modifies the
+    authoritative existing decision / actionability / geometry / trade
+    plan / paper-trading eligibility. When no store is attached, the
+    dashboard shows an honest "UNAVAILABLE" historical context.
+    """
+
+    def __init__(
+        self,
+        store: Any | None = None,
+        lookup_engine: Any | None = None,
+        config: Any | None = None,
+    ) -> None:
+        if lookup_engine is None and store is not None:
+            from engine.data.historical_evidence_lookup import (
+                HistoricalEvidenceLookupEngine,
+            )
+
+            lookup_engine = HistoricalEvidenceLookupEngine(store, config)
+        self.lookup_engine = lookup_engine
+
+    @staticmethod
+    def _clean(value: str) -> str:
+        """Drop absent sentinels — an UNKNOWN/NONE current label is NOT a
+        comparison dimension (matching only on what is actually known)."""
+
+        return "" if value in ("", "NONE", "UNKNOWN") else value
+
+    def context_for(
+        self,
+        request: AnalysisRequest,
+        setup_tf: str,
+        ctx_tf: str,
+        result: InstrumentScanResult,
+        candidate: Any,
+    ) -> HistoricalContextView:
+        if self.lookup_engine is None:
+            return HistoricalContextView(
+                limitations=(
+                    "No Phase 6D historical research store attached. "
+                    "Historical evidence is UNAVAILABLE (never fabricated)."
+                ),
+            )
+        from engine.models.historical_context import HistoricalEvidenceRequest
+
+        setup_type = ""
+        if candidate is not None:
+            st = getattr(candidate, "setup_type", None)
+            setup_type = getattr(st, "name", "") or ""
+        direction = getattr(result, "direction", "") or ""
+        mtf_alignment = result.alignment.name if result.alignment else ""
+        trend_state = ""
+        range_state = ""
+        lower = getattr(result, "lower_context", None)
+        if lower is not None:
+            trend = getattr(lower, "trend", None)
+            trend_state = getattr(getattr(trend, "state", None), "name", "") or ""
+            rng = getattr(lower, "range", None)
+            range_state = getattr(getattr(rng, "state", None), "name", "") or ""
+
+        lookup_request = HistoricalEvidenceRequest(
+            instrument=request.instrument,
+            setup_timeframe=setup_tf,
+            context_timeframe=ctx_tf,
+            evaluation_time=getattr(result, "timestamp", None),
+            setup_type=self._clean(setup_type),
+            direction=self._clean(direction),
+            trend_state=self._clean(trend_state),
+            range_state=self._clean(range_state),
+            mtf_alignment=self._clean(mtf_alignment),
+        )
+        context = self.lookup_engine.lookup(lookup_request)
+
+        strength = (
+            context.strength.name if context.strength is not None else "UNAVAILABLE"
+        )
+        stats = context.statistics
+        return HistoricalContextView(
+            available=context.is_available,
+            status=context.status.name,
+            evidence_strength=strength,
+            match_key=context.match_key,
+            comparable_occurrences=context.comparable_occurrences,
+            completed_outcomes=context.completed_outcomes,
+            ambiguous_count=context.ambiguous_count,
+            unresolved_count=context.unresolved_count,
+            win_rate=getattr(stats, "win_rate", None) if stats else None,
+            average_realized_r=(
+                getattr(stats, "average_realized_r", None) if stats else None
+            ),
+            median_realized_r=(
+                getattr(stats, "median_realized_r", None) if stats else None
+            ),
+            profit_factor=getattr(stats, "profit_factor", None) if stats else None,
+            research_ids=context.research_ids,
+            reason=context.reason,
+            limitations=" ".join(context.limitations),
+        )
+
+
 def default_service(
     provider_name: str = "fixture",
     evidence_report: Any | None = None,
@@ -2035,6 +2199,7 @@ def default_service(
     symbol_map: dict[str, str] | None = None,
     paper_trade_store: Any | None = None,
     historical_service: "HistoricalMarketDataService | None" = None,
+    historical_evidence_source: "HistoricalEvidenceSource | None" = None,
 ) -> DashboardAnalysisService:
     """Build a dashboard service with sensible defaults.
 
@@ -2071,6 +2236,7 @@ def default_service(
         freshness_config=freshness_config,
         paper_trade_store=paper_trade_store,
         historical_service=historical_service,
+        historical_evidence_source=historical_evidence_source,
     )
 
 
@@ -2080,6 +2246,7 @@ __all__ = [
     "DashboardAnalysisService",
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
+    "HistoricalEvidenceSource",
     "OperationsRequest",
     "PaperTradeManualCloseRequest",
     "PaperTradeRequest",

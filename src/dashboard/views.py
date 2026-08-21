@@ -414,6 +414,94 @@ class EvidenceView:
 
 
 @dataclass(frozen=True, slots=True)
+class HistoricalContextView:
+    """
+    Presentation view of the Product Phase 6E historical evidence
+    context (comparable historical setups) attached to a current
+    assessment.
+
+    ADDITIVE and CONTEXTUAL ONLY. This view NEVER modifies the
+    authoritative existing decision / actionability / geometry / trade
+    plan / paper-trading eligibility. When no Phase 6D historical
+    research is attached, or no comparable already-resolved historical
+    occurrence exists, the fields are the honest "unavailable" sentinels
+    — never fabricated statistics.
+
+    Attributes:
+
+    available
+        Whether matched historical evidence exists (status AVAILABLE).
+
+    status
+        Phase 6E availability status name (``AVAILABLE`` / ``NO_MATCH``
+        / ``RESEARCH_UNAVAILABLE``), or ``"UNAVAILABLE"`` when no Phase
+        6D store is attached at all.
+
+    evidence_strength
+        The REUSED Sprint 11Y ``EvidenceStrength`` name
+        (``INSUFFICIENT`` / ``WEAK`` / ``MODERATE`` / ``STRONG``), or
+        ``"UNAVAILABLE"`` when no evidence is available. NEVER a second
+        strength vocabulary.
+
+    match_key
+        The deterministic comparison key used.
+
+    comparable_occurrences / completed_outcomes / ambiguous_count /
+    unresolved_count
+        Counts over the matched comparable historical occurrences.
+
+    win_rate / average_realized_r / median_realized_r / profit_factor
+        REUSED Sprint 11X statistics over the matched already-resolved
+        outcomes, or ``None`` when unavailable. NEVER fabricated.
+
+    research_ids
+        The Phase 6D research result ids this context was derived from
+        (provenance).
+
+    reason / limitations
+        Descriptive explanation + the fixed limitations.
+    """
+
+    available: bool = False
+    status: str = "UNAVAILABLE"
+    evidence_strength: str = "UNAVAILABLE"
+    match_key: str = ""
+    comparable_occurrences: int = 0
+    completed_outcomes: int = 0
+    ambiguous_count: int = 0
+    unresolved_count: int = 0
+    win_rate: float | None = None
+    average_realized_r: float | None = None
+    median_realized_r: float | None = None
+    profit_factor: float | None = None
+    research_ids: tuple[str, ...] = ()
+    reason: str = ""
+    limitations: str = ""
+
+
+def historical_context_view_to_jsonable(view: HistoricalContextView) -> dict[str, Any]:
+    """JSON-serializable projection of a :class:`HistoricalContextView`."""
+
+    return {
+        "available": view.available,
+        "status": view.status,
+        "evidence_strength": view.evidence_strength,
+        "match_key": view.match_key,
+        "comparable_occurrences": view.comparable_occurrences,
+        "completed_outcomes": view.completed_outcomes,
+        "ambiguous_count": view.ambiguous_count,
+        "unresolved_count": view.unresolved_count,
+        "win_rate": view.win_rate,
+        "average_realized_r": view.average_realized_r,
+        "median_realized_r": view.median_realized_r,
+        "profit_factor": view.profit_factor,
+        "research_ids": list(view.research_ids),
+        "reason": view.reason,
+        "limitations": view.limitations,
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class MarketOverviewView:
     """
     Presentation view of the market context REUSED from the Sprint 11P
@@ -662,6 +750,9 @@ class DashboardTradeView:
         default_factory=ActionabilityDetail,
     )
     data_source: DataSourceView = field(default_factory=DataSourceView)
+    historical_context: HistoricalContextView = field(
+        default_factory=HistoricalContextView,
+    )
     reason: str = ""
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -766,6 +857,13 @@ def to_jsonable(view: DashboardTradeView) -> dict[str, Any]:
         # Alias so a trade-review consumer can read the trade geometry
         # under a domain-named key. Identical content, by reference.
         "trade_geometry": geometry,
+        # Product Phase 6E — ADDITIVE historical context (comparable
+        # historical setups). Never modifies the authoritative decision /
+        # geometry; honest "unavailable" when no Phase 6D research is
+        # attached.
+        "historical_context": historical_context_view_to_jsonable(
+            view.historical_context,
+        ),
         "evidence": {
             "available": view.evidence.available,
             "evidence_strength": view.evidence.evidence_strength,
