@@ -15,16 +15,25 @@ Mechanism (Windows-native, no dependencies):
     exits, and Windows releases it automatically even if the process is
     killed or crashes, so no request can leak after a crash / task kill.
 
-Session lifecycle (controlled by run_paper_trading_cycle.bat):
+Session lifecycle (controlled by run_paper_trading_cycle.bat via
+keep_awake_manager.py):
     * The first cycle of the session starts ONE instance of this script
       with --until <session end> and --pid-file <marker>. Subsequent
       cycles see the live PID and leave it running.
+    * SINGLETON: this script holds a named Windows mutex for its whole
+      lifetime. If another instance is ever started (detection failure,
+      concurrent scheduled launches, manual run), it sees the mutex is
+      already held and exits immediately WITHOUT acquiring a power
+      request, so there can never be two active keep-awake holders.
+    * The PID marker (PID + process start-time token) is written by THIS
+      process itself, so it always names the real interpreter - never the
+      .venv redirector parent, which shares the same command line.
     * The script exits by itself when the --until wall-clock time is
       reached (shortly after the final 16:00 cycle), or earlier if the
       optional stop file appears, and always before --max-minutes.
-    * If the script crashes or is terminated, the PID file goes stale;
-      the next scheduled cycle (<= 15 minutes later) starts a fresh
-      instance. Windows has already released the power request.
+    * If the script crashes or is terminated, the PID file goes stale and
+      Windows releases both the power request and the mutex; the next
+      scheduled cycle (<= 15 minutes later) starts a fresh instance.
 
 Stdlib only. Does nothing (exits 0) on non-Windows platforms.
 """
@@ -34,9 +43,14 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import keep_awake_manager as kam  # noqa: E402
 
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -70,9 +84,18 @@ def _set_execution_state(state: int) -> int:
 
 
 def _write_pid_file(pid_file: str) -> None:
+    """Write THIS process's identity (PID + start-time token).
+
+    Written by the helper itself, so the PID is always the real
+    interpreter's - never the .venv redirector parent's. The start-time
+    token lets the manager distinguish this process from an unrelated
+    process that later recycles the same PID.
+    """
+
     path = Path(pid_file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(str(os.getpid()), encoding="ascii")
+    token = kam.process_start_token(os.getpid()) or ""
+    path.write_text(f"{os.getpid()}\n{token}\n", encoding="ascii")
 
 
 def _remove_pid_file(pid_file: str) -> None:
@@ -80,9 +103,10 @@ def _remove_pid_file(pid_file: str) -> None:
 
     try:
         path = Path(pid_file)
-        if path.read_text(encoding="ascii").strip() == str(os.getpid()):
+        first_line = path.read_text(encoding="ascii").splitlines()[0].strip()
+        if first_line == str(os.getpid()):
             path.unlink()
-    except OSError:
+    except (OSError, IndexError):
         pass
 
 
@@ -98,10 +122,25 @@ def main(argv: list[str] | None = None) -> int:
                              "WITHOUT acquiring the power request.")
     parser.add_argument("--max-minutes", type=float, default=20.0,
                         help="Hard cap: exit even without a stop file / until.")
+    parser.add_argument("--mutex-name", default=kam.DEFAULT_MUTEX_NAME,
+                        help="Named session mutex enforcing a single helper "
+                             "(empty disables the singleton guard).")
     args = parser.parse_args(argv)
 
     if os.name != "nt":  # nothing to do outside Windows
         return 0
+
+    # Singleton guard: exactly ONE logical keep-awake helper per session.
+    # Checked BEFORE acquiring the power request or writing the PID marker,
+    # so a duplicate instance is always inert.
+    mutex_status, mutex_handle = "unavailable", None
+    if args.mutex_name:
+        mutex_status, mutex_handle = kam.acquire_session_mutex(args.mutex_name)
+        if mutex_status == "already-exists":
+            print("keep-awake: another session helper is already running "
+                  "(session mutex held); exiting WITHOUT acquiring the "
+                  "power request")
+            return 0
 
     budget_seconds = args.max_minutes * 60.0
     if args.until is not None:
@@ -142,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             _set_execution_state(ES_CONTINUOUS)
         if args.pid_file:
             _remove_pid_file(args.pid_file)
+        kam.release_session_mutex(mutex_handle)
         print(f"keep-awake: system power request RELEASED ({reason})")
 
     return 0  # keep-awake is best-effort; never fail the cycle
