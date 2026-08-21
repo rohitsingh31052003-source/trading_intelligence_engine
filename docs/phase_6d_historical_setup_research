@@ -1,0 +1,146 @@
+# Product Phase 6D — Historical Setup Research
+
+## What Phase 6D does
+
+Phase 6D searches the Phase 6C historical research corpus for historical
+occurrences of the **existing** setup / structure architecture and evaluates
+what actually happened afterward:
+
+```
+Phase 6C Historical Research Corpus
+                |
+       historical evaluation point T
+                |
+       existing setup/structure logic (REUSED VERBATIM)
+                |
+       setup occurrence detected
+                |
+       historical outcome (REUSED Sprint 11W, forward-only)
+                |
+       evidence aggregation (REUSED Sprint 11X/11Y semantics)
+                |
+       Historical Research Evidence
+```
+
+It answers: "When the existing setup structure appeared historically under
+comparable conditions, what happened afterward?" The output is **descriptive
+historical evidence** — deterministic, serializable, reproducible from
+`corpus + research request + research configuration`.
+
+> Historical evidence is descriptive and observational. It is not a
+> prediction, recommendation, or guarantee of future performance.
+
+## What counts as a historical setup occurrence
+
+At every canonical corpus evaluation point `T` the engine reuses the existing
+detection chain VERBATIM on the point-in-time prefix:
+
+1. `CandlePatternEngine` (11O) on the setup prefix (`<= T`),
+2. `SetupConfluenceEngine` (11Q) on the patterns + the reused 11P market
+   context,
+3. `TradeCandidateEngine` (11R) for geometry + candidate status,
+4. `TradeDecisionEngine` (11S) for the authoritative decision classification.
+
+A point is an **occurrence** when its 11Q classification is one of the
+configured `occurrence_classifications` (default `("POTENTIAL_SETUP",)` — a
+WATCH is not an occurrence by default). The existing decision classification
+(REJECTED / WATCH / QUALIFIED / PREFERRED) is preserved verbatim; a rejected
+or geometry-incomplete setup is **never** silently converted into an
+opportunity.
+
+## How outcomes are calculated
+
+Each occurrence is projected to the reused Sprint 11W `OutcomeSubject`
+(geometry VERBATIM from the 11R candidate) and evaluated by the reused
+`OutcomeEvaluator` with `max_holding_bars = request.forward_horizon`:
+
+- **Forward horizon**: configurable candles after `T`.
+- **MFE / MAE**: maximum favorable / adverse excursion (absolute + R).
+- **Realized R / exit price** for TARGET_HIT / STOP_HIT / EXPIRED.
+- **Geometry levels**: entry / stop / target only when actually available.
+
+Missing or incomplete geometry is reported explicitly as `NO_GEOMETRY` —
+levels are never invented. No forward data within the horizon is reported as
+`INSUFFICIENT_DATA`.
+
+## Ambiguous candles
+
+The reused Sprint 11W policy applies: when a single candle touches BOTH the
+stop and the target, the outcome is explicitly `BOTH_TOUCHED` (ambiguous);
+`realized_r`, `exit_price` are `None`. A winner or loser is **never**
+manufactured from OHLC ordering assumptions.
+
+## Evidence aggregation
+
+Occurrences aggregate into `SetupEvidence` records (overall + per configured
+grouping dimension: SETUP_TYPE / DIRECTION / TREND / RANGE_STATE /
+MTF_ALIGNMENT):
+
+- sample_size / occurrence_count
+- completed_outcomes / ambiguous_count / unresolved_count / no_geometry_count
+- win_count / loss_count / expired_count
+- average / median realized R, average MFE / MAE (via the reused Sprint 11X
+  statistics computation — nothing recomputed, nothing fabricated)
+
+Evidence strength reuses the Sprint 11Y `EvidenceStrength` vocabulary
+(INSUFFICIENT / WEAK / MODERATE / STRONG) with documented configurable sample
+gates. **Sample size is a hard gate**: a small sample is INSUFFICIENT
+regardless of how favourable the observed result is. No expectancy,
+confidence, or statistical-significance claim is made.
+
+## Point-in-time rules (exact)
+
+- **Detection**: setup timeframe `timestamp <= T`; context timeframe
+  `timestamp < T` (strictly completed higher-timeframe candles only — the
+  Phase 6C guarantee).
+- **Outcome**: `timestamp > T`, truncated to the forward horizon.
+- The public API accepts **no** `future` / `future_candles` / `lookahead`
+  parameter.
+- Mutating a future candle cannot change detection at `T`; it can only change
+  the measured outcome, and only inside the horizon.
+
+## Data-quality handling
+
+The result status explicitly distinguishes:
+
+- `RESEARCHED` — occurrences detected and evaluated,
+- `NO_OCCURRENCES` — valid points examined, no setup occurred (observed,
+  not a data problem),
+- `INSUFFICIENT_DATA` — no point satisfied the minimum-history / quality
+  gates,
+- `CORPUS_UNAVAILABLE` — no stored dataset for the request,
+- `INVALID_REQUEST` — request inconsistent with the corpus configuration.
+
+Phase 6C corpus point statuses (INSUFFICIENT_HISTORY / MISSING_DATA /
+DATA_GAP) are tallied as explicit skip counts, plus a `MINIMUM_HISTORY` skip
+bucket for points below the request's stricter history requirement.
+
+## Persistence
+
+`SetupResearchStore` mirrors the Phase 6C manifest architecture: one
+schema-versioned JSON file per research result
+(`<directory>/<research_id>.research.json`), atomic same-dir temp +
+`os.replace`, safe-id validation, schema version checked before
+reconstruction. Default directory `./data/setup_research` (git-ignored).
+Serialization is deterministic sorted-key JSON with the established
+`__enum__` / `__dataclass__` / `__datetime__` / `__tuple__` type tags.
+
+## Limitations
+
+- Descriptive / observational only — a large historical sample does NOT imply
+  future profitability.
+- No live-trading, broker, execution, position-sizing or paper-trading
+  integration.
+- Research consumes the Phase 6C corpus only; it never re-runs ingestion,
+  never calls providers, never touches the live path.
+
+## What Phase 6D does NOT do
+
+- Does NOT create a new trading strategy or a new setup definition.
+- Does NOT replace / modify the existing decision engine (authoritative).
+- Does NOT introduce prediction, ML, LLM or probability logic.
+- Does NOT modify live market-data providers, the MarketScanner, the
+  TradeCandidate geometry semantics, TradePlan calculations, the PaperTrade
+  lifecycle or the live scheduler.
+- Does NOT fabricate samples, win rates, profit factors, expectancy,
+  confidence or significance.
