@@ -10,3 +10,5 @@ paper_trades/
 experiments/
 data/research_corpus/
 data/setup_research/
+# Live paper validation observations (Product Phase 6F) — never commit
+data/live_validation/

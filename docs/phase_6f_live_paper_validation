@@ -1,0 +1,223 @@
+# Product Phase 6F — Live Paper Validation
+
+## What Phase 6F does
+
+Phase 6F validates the completed Phase 6A-6E historical-research pipeline
+against **real / near-live Yahoo market data during the live market session**,
+using **paper trading only**. It answers:
+
+> "When the system sees a current market state, what did historical research
+> say about similar setups, and how does that historical expectation compare
+> with the actual subsequent paper-trading outcome?"
+
+```
+LIVE / NEAR-LIVE DATA (existing provider; COMPLETED candles only)
+    |
+existing DashboardAnalysisService.analyze     (authoritative decision)
+    |
+existing Phase 6E historical evidence context (attached to the view)
+    |
+existing PaperTradingOperations.run_once      (track + create + persist)
+    |
+LiveValidationObservation per instrument      (Phase 6F — this layer)
+    |
+LiveValidationStore (dedicated persistence; REFERENCES research ids +
+    paper-trade ids — never duplicates the heavy records)
+    |
+historical-vs-actual comparison report (descriptive only)
+```
+
+> Historical evidence is observational research context. It does not predict
+> future returns, guarantee profitability, or override the authoritative
+> decision engine.
+
+## Architecture
+
+Phase 6F is a THIN ORCHESTRATION layer. It implements NO new market analysis,
+NO decision logic, NO geometry, NO position sizing, NO outcome engine, NO
+prediction / probability, NO ML / LLM, NO broker connectivity and NO
+BUY/SELL/ENTER/EXIT/HOLD recommendation. Every component is REUSED:
+
+* **Provider + completed-candle boundary** — the existing Product Phase 1
+  provider abstraction (`YahooDataProvider` live / `FixtureDataProvider`
+  deterministic). The forming candle NEVER enters the analysis, the decision
+  or the outcome.
+* **Decision** — the existing Sprint 11S classification
+  (REJECTED / WATCH / QUALIFIED / PREFERRED) is AUTHORITATIVE and reused
+  VERBATIM — never renamed to BUY/SELL, never upgraded / downgraded, never
+  overridden by historical evidence.
+* **Historical evidence** — read from the existing
+  `DashboardTradeView.historical_context` attachment (Phase 6E
+  `HistoricalEvidenceLookupEngine` over the persisted Phase 6D
+  `SetupResearchStore`). Phase 6F NEVER re-runs the Phase 6D research and
+  NEVER performs a second lookup with different semantics.
+* **Paper trading** — paper trades are created / tracked / persisted
+  EXCLUSIVELY through the existing `PaperTradingOperations` cycle (the same
+  READY_FOR_REVIEW eligibility gate, duplicate prevention and lifecycle).
+  Phase 6F NEVER creates a paper trade itself.
+* **Outcomes** — read from the existing paper-trade lifecycle records. No
+  second outcome engine; no outcome is fabricated.
+
+### Files
+
+* `src/engine/models/live_validation.py` — `LiveValidationStatus`,
+  `LiveValidationCycleStatus`, `LiveValidationObservation`,
+  `LiveValidationCycleResult` (frozen + slots).
+* `src/engine/intelligence/live_validation_serialization.py` — deterministic,
+  self-describing JSON (`LIVE_VALIDATION_SCHEMA_VERSION = 1`).
+* `src/dashboard/live_validation_store.py` — `LiveValidationStore`
+  (atomic writes, safe ids, corruption detection, append/history journal).
+* `src/dashboard/live_validation.py` — `LivePaperValidation` (the
+  orchestration engine) + `LiveValidationConfig`.
+* `src/engine/reporting/live_validation.py` — `LiveValidationFormatter`
+  (historical-vs-live comparison; returns `str`, never prints).
+* `scripts/run_live_paper_validation.py` — operator CLI (the single explicit
+  entry point the existing scheduler can invoke).
+* `scripts/test_phase_6f.py` — offline deterministic demo (44 checks).
+* `tests/test_live_paper_validation.py` — deterministic tests.
+
+## Lifecycle
+
+One `run_once()` validation cycle:
+
+1. Resolve the instrument watchlist from the EXISTING configured universe
+   mechanism (`service.available_instruments()`); nothing is hard-coded.
+2. Run the EXISTING `PaperTradingOperations.run_once` (tracks + creates
+   paper trades through the authoritative eligibility gate; persists them
+   through the existing `PaperTradeStore`).
+3. For each instrument (sorted, failure-isolated): run the existing analysis
+   (completed candles only), read the attached Phase 6E historical evidence
+   context, link any paper trade the operations cycle created / tracked for
+   that instrument, and build a `LiveValidationObservation`.
+4. Persist each observation IDEMPOTENTLY (deterministic `lval-...` id;
+   unchanged observations are not re-written; outcome-advancing updates bump
+   `revision` + append history).
+5. Refresh previously-recorded OPEN observations whose referenced paper
+   trade advanced (the historical-vs-actual comparison completes honestly
+   when the actual outcome arrives — never fabricated earlier).
+
+## Validation states (non-predictive)
+
+`OBSERVED` — current state + evidence recorded; no paper trade referenced.
+`PAPER_TRADE_CREATED` — an eligible opportunity created a paper trade this
+cycle through the existing operations layer.
+`PAPER_TRADE_ACTIVE` — the referenced paper trade is still non-terminal.
+`COMPLETED` — the referenced paper trade reached a terminal state; the actual
+outcome is recorded (realized R only when the existing engine provides it).
+`NO_OPPORTUNITY` — no opportunity / no usable decision (a valid observation).
+`REJECTED` — the authoritative decision was REJECTED (a valid observation).
+`NOT_READY` — the validation layer is not initialized (no store).
+`ERROR` — the instrument failed this cycle (provider / analysis / persistence
+failure), recorded explicitly.
+
+There are NO probabilistic prediction states. A rejected or no-opportunity
+observation is still a valid validation observation.
+
+## Point-in-time rules
+
+At evaluation time `T`:
+
+```
+current setup:      setup candles <= T ; context candles < T
+historical research: occurrence < T AND outcome already resolved at T
+paper-trade outcome: resolves strictly AFTER the evaluation timestamp
+```
+
+* Only completed candles are used for analysis and outcome evaluation; the
+  forming candle never enters the intelligence or decision engine.
+* `run_once()` accepts NO `future` / `future_candles` / `lookahead`
+  parameter.
+* The Sprint 11W `OutcomeEvaluator` is NEVER invoked by the validation layer
+  (paper-trade touch logic lives in the existing paper-trading engine).
+* The historical pipeline is NEVER re-run.
+* A fixed-T observation is unaffected by appending future candles
+  (regression-tested).
+
+## Persistence
+
+* JSON only, deterministic (sorted keys), schema-versioned
+  (`LIVE_VALIDATION_SCHEMA_VERSION = 1`, checked BEFORE model
+  reconstruction).
+* One document per observation (`<directory>/<validation_id>.validation`).
+  The `.validation` suffix (intentionally NOT `.json`) prevents polluting
+  the paper-trade store / experiment registry / research store listings in a
+  shared directory.
+* Atomic writes (same-dir temp + flush + fsync best-effort + `os.replace`).
+* Safe-id validation (path-traversal proof); corruption detection via typed
+  errors (`LiveValidationIntegrityError`); filename-id integrity checks.
+* Append/history semantics: one journal line per persisted revision
+  (`<validation_id>.validation.history.jsonl`); the main file holds the
+  latest revision.
+* Idempotent: the same setup at the same `T` resolves to the same
+  deterministic `lval-...` id; re-running a cycle against the same completed
+  candle creates no duplicate observation and no duplicate paper trade.
+* The existing `PaperTradeStore` schema is NOT modified — observations
+  REFERENCE paper-trade ids and Phase 6D research ids (provenance retained;
+  heavy records never duplicated).
+
+## Historical-vs-live comparison
+
+`LiveValidationFormatter.format_cycle(result)` renders, per instrument:
+Instrument, Evaluation time, Current decision, Current actionability,
+Historical evidence status, Historical evidence strength, Historical sample
+size, Historical statistics (win rate / average realized R / profit factor),
+Paper trade created?, Paper trade outcome, Realized result / R, Validation
+status.
+
+The comparison is DESCRIPTIVE: it never claims historical evidence predicts
+the future, never computes a predictive probability, and never creates a new
+trading score. The three concerns (current decision / historical evidence /
+actual paper-trade outcome) are presented separately — never merged.
+
+## Failure handling (failure isolation)
+
+One instrument failing never aborts the cycle. Provider failure, stale data,
+historical research unavailable, no historical match, rejected decision, no
+opportunity, incomplete geometry, paper-trade persistence failure and
+unavailable outcome are all recorded EXPLICITLY (status + warnings + cycle
+errors) — never silently converted into a successful validation.
+
+## Scheduler integration
+
+Phase 6F exposes a single explicit `LivePaperValidation.run_once()` API and
+the operator CLI `scripts/run_live_paper_validation.py`. The EXISTING
+market-session scheduler / keep-awake launcher
+(`scripts/windows/run_paper_trading_cycle.bat` + `Install-PaperTradingTask.ps1`)
+can invoke this entry point on the same cadence as the existing paper-trading
+cycle — NO second scheduler is created, and the existing 09:15-16:00 session
+behavior, keep-awake process, completed-candle handling, Yahoo provider and
+paper-trading-only limitation are preserved unchanged. The CLI defaults
+`DASHBOARD_PROVIDER` to `yahoo` without overwriting an explicit value.
+
+## Multi-instrument operation
+
+The instrument universe is resolved through the EXISTING configurable
+universe / watchlist mechanism (`engine.config.universe` /
+`dashboard.watchlist` / `service.available_instruments()`); the current
+configured universe contains the NIFTY 50 ∪ SENSEX coverage. Nothing is
+hard-coded in the validation layer, and provider code is not modified to
+define the universe.
+
+## Paper-trading-only limitation
+
+This system performs paper trading only. No real orders are placed. There is
+NO broker API, NO order execution, NO position management at a broker and NO
+automatic financial transaction anywhere in Phase 6F.
+
+## Interpretation limitations
+
+* Historical evidence is observational research context. It does not predict
+  future returns, guarantee profitability, or override the authoritative
+  decision engine.
+* Paper-trade results never rewrite the original system decision; a
+  paper-trade outcome is a SEPARATE concern from the authoritative decision
+  classification.
+* The validation observation references persisted research + paper-trade
+  records; it is an audit view, not a second source of intelligence.
+* The comparison is descriptive. A favorable historical statistic does NOT
+  imply the current paper trade will succeed, and an unfavorable one does
+  NOT imply it will fail.
+* The existing paper-trade lifecycle semantics are inherited unchanged
+  (including mark-to-close EXPIRED at the end of the supplied completed
+  candle window and BOTH_TOUCHED ambiguity, where realized R is never
+  fabricated).
