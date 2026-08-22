@@ -156,6 +156,15 @@ def _windows_start_token(pid: int) -> str | None:
     if not handle:
         return None
     try:
+        # A terminated process is still openable while ANY handle to it
+        # exists (e.g. the subprocess handle a parent retains for a
+        # finished child), and GetProcessTimes would still return its
+        # creation time. A dead process has no usable identity, so it
+        # must yield None (mirrors the POSIX zombie handling).
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            if exit_code.value != _STILL_ACTIVE:
+                return None
         creation = _FILETIME()
         exit_time = _FILETIME()
         kernel_time = _FILETIME()

@@ -304,12 +304,27 @@ class HistoricalDataStore:
         text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         self._atomic_write(candles_path, text)
 
+        # POST-WRITE VERIFICATION: reload the persisted file and confirm
+        # the reloaded candle count matches what was written. The
+        # returned total is the RELOADED count (never the in-memory
+        # count), so a platform-level write failure (sync revert, AV
+        # interference, permission issue) surfaces as an honest
+        # HistoricalDataIntegrityError instead of a false success
+        # report.
+        reloaded = self.load_candles(instrument, timeframe)
+        if len(reloaded) != len(ordered):
+            raise HistoricalDataIntegrityError(
+                f"Persistence verification failed for "
+                f"{instrument}/{timeframe}: wrote {len(ordered)} candles "
+                f"but reloaded {len(reloaded)} from {candles_path!s}.",
+            )
+
         if provenance is not None:
             prov_path = dataset_dir / "provenance.jsonl"
             line = serialize_provenance(provenance)
             self._atomic_append(prov_path, line + "\n")
 
-        return added, existing_count, len(ordered), candles_path
+        return added, existing_count, len(reloaded), candles_path
 
     # ------------------------------------------------------------
     # ATOMIC WRITE HELPERS

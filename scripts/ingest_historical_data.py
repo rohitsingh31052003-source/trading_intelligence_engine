@@ -205,9 +205,14 @@ def format_report(result) -> str:
                 f"Stored          : {store.path}",
                 f"Records Added   : {store.records_added}",
                 f"Total Stored    : {store.total_candles}",
-                "",
             ],
         )
+        if getattr(store, "reload_verified", False):
+            lines.append(
+                f"Reload check    : PASS ({store.total_candles} candles "
+                "reloaded from the persisted file)",
+            )
+        lines.append("")
     if rejected:
         lines.append("Rejected records:")
         for name, reason in rejected[:10]:

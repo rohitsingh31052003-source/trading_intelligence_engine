@@ -487,6 +487,10 @@ class HistoricalMarketDataService:
             records_existing=existing,
             total_candles=total,
             path=str(path),
+            # store() raises HistoricalDataIntegrityError when the
+            # post-write reload verification fails, so reaching this
+            # point means the persisted file was reloaded and matched.
+            reload_verified=True,
         )
 
     def ingest(

@@ -32,10 +32,11 @@ the service depends only on the protocol.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Mapping, Protocol, Sequence
 
+from engine.config.universe import BENCHMARK_INDEX, COMBINED_UNIVERSE
 from engine.data.historical_times import (
     canonical_timeframe,
     supported_timeframes,
@@ -267,6 +268,51 @@ class DeterministicLocalHistoricalProvider:
 # ============================================================
 
 
+#: Yahoo symbols for the benchmark index instruments (indices use the
+#: ``^`` prefix). Provider-specific Yahoo formatting, isolated here —
+#: it never enters the research/service layers.
+_INDEX_YAHOO_SYMBOLS: dict[str, str] = {
+    "NIFTY": "^NSEI",
+}
+
+
+def _yahoo_timestamp_to_utc(timestamp: datetime) -> datetime | None:
+    """Normalize a Yahoo/yfinance timestamp to timezone-aware UTC.
+
+    yfinance returns timezone-naive timestamps for daily/weekly/monthly
+    data and timezone-aware timestamps (exchange-local tz) for intraday
+    data. Provider-specific formatting stays inside the provider layer:
+    naive values are interpreted as UTC (Yahoo daily bars are
+    exchange-day labels carrying no clock time) and aware values are
+    converted to UTC. This runs BEFORE the canonical ``OHLCVCandle`` is
+    created, so the existing NAIVE_TIMESTAMP validation is never
+    weakened or bypassed. Returns ``None`` for non-datetime values.
+    """
+
+    if not isinstance(timestamp, datetime):
+        return None
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
+
+
+def _default_yahoo_symbol_map() -> dict[str, str]:
+    """Default instrument -> Yahoo symbol map for the canonical universe.
+
+    Derived from the single canonical universe source
+    (:mod:`engine.config.universe`): every NIFTY 50 ∪ SENSEX constituent
+    resolves to its ``<NSE symbol>.NS`` Yahoo symbol and the benchmark
+    index instruments resolve to their ``^``-prefixed Yahoo symbols.
+    No second universe is defined here — only provider-specific Yahoo
+    formatting of the existing canonical universe.
+    """
+
+    mapping = {name: f"{name}.NS" for name in COMBINED_UNIVERSE}
+    for name in BENCHMARK_INDEX:
+        mapping[name] = _INDEX_YAHOO_SYMBOLS.get(name, name)
+    return mapping
+
+
 class YahooHistoricalDataProvider:
     """
     OPTIONAL Yahoo-backed historical provider.
@@ -279,6 +325,14 @@ class YahooHistoricalDataProvider:
 
     Yahoo remains the LIVE provider for the dashboard; this adapter is
     additive and isolated behind the historical abstraction.
+
+    SYMBOL MAPPING (isolated inside the provider): canonical instrument
+    names (``"NIFTY"``, ``"RELIANCE"``, ...) are mapped to Yahoo symbols
+    (``"^NSEI"``, ``"RELIANCE.NS"``, ...) INSIDE this provider via the
+    default map derived from the canonical universe
+    (:mod:`engine.config.universe`) or the ``symbol_map`` constructor
+    argument. Unknown instruments pass through verbatim (Yahoo accepts
+    many tickers directly, e.g. ``AAPL``).
     """
 
     provider_name = "yahoo-historical"
@@ -297,7 +351,9 @@ class YahooHistoricalDataProvider:
     }
 
     def __init__(self, provider=None, symbol_map: dict[str, str] | None = None) -> None:
-        self._symbol_map = symbol_map or {}
+        self._symbol_map = (
+            dict(symbol_map) if symbol_map else _default_yahoo_symbol_map()
+        )
         if provider is not None:
             self._provider = provider
         else:
@@ -359,10 +415,32 @@ class YahooHistoricalDataProvider:
                 candles=(),
                 reason="Yahoo returned no candles for the request.",
             )
+        # Normalize provider-specific timestamps to timezone-aware UTC
+        # BEFORE the canonical OHLCVCandle objects reach validation.
+        normalized = []
+        for candle in candles:
+            ts = _yahoo_timestamp_to_utc(
+                getattr(candle, "timestamp", None))
+            if ts is None:
+                continue  # malformed record; the service reports counts
+            if ts is candle.timestamp:
+                normalized.append(candle)
+            else:
+                normalized.append(replace(candle, timestamp=ts))
+        if not normalized:
+            return HistoricalProviderResponse(
+                provider_name=self.provider_name,
+                status=ProviderResponseStatus.EMPTY,
+                candles=(),
+                reason=(
+                    "Yahoo returned candles but none had a usable "
+                    "timestamp after UTC normalization."
+                ),
+            )
         return HistoricalProviderResponse(
             provider_name=self.provider_name,
             status=ProviderResponseStatus.OK,
-            candles=tuple(candles),
+            candles=tuple(normalized),
         )
 
 

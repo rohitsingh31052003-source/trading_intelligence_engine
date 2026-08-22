@@ -12,7 +12,7 @@ import inspect
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1102,3 +1102,406 @@ class TestDashboardIntegration:
         assert row["instrument"] == "NIFTY"
         assert row["available"] is True
         assert row["status"] == "AVAILABLE"
+
+
+# ============================================================
+# YAHOO HISTORICAL SYMBOL RESOLUTION (Phase 6B fix)
+# ============================================================
+
+
+class _RecordingYahooBackend:
+    """Fake YahooFinanceProvider backend recording get_history calls."""
+
+    def __init__(self, candles=()):
+        self.calls: list[tuple[str, object, object, str]] = []
+        self._candles = tuple(candles)
+
+    def get_history(self, symbol, start, end, interval):
+        self.calls.append((symbol, start, end, interval))
+        return list(self._candles)
+
+
+class TestYahooHistoricalSymbolResolution:
+    def test_required_mapping(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        p = YahooHistoricalDataProvider(provider=_RecordingYahooBackend())
+        assert p.resolve_symbol("NIFTY") == "^NSEI"
+        assert p.resolve_symbol("RELIANCE") == "RELIANCE.NS"
+        assert p.resolve_symbol("TCS") == "TCS.NS"
+        assert p.resolve_symbol("HDFCBANK") == "HDFCBANK.NS"
+        assert p.resolve_symbol("ICICIBANK") == "ICICIBANK.NS"
+
+    def test_full_universe_covered_by_default_map(self):
+        from engine.config.universe import COMBINED_UNIVERSE, MARKET_UNIVERSE
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        p = YahooHistoricalDataProvider(provider=_RecordingYahooBackend())
+        for name in COMBINED_UNIVERSE:
+            assert p.resolve_symbol(name) == f"{name}.NS"
+        for name in MARKET_UNIVERSE:
+            resolved = p.resolve_symbol(name)
+            assert resolved == "^NSEI" or resolved == f"{name}.NS"
+
+    def test_unknown_instrument_passthrough(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        p = YahooHistoricalDataProvider(provider=_RecordingYahooBackend())
+        assert p.resolve_symbol("AAPL") == "AAPL"
+
+    def test_explicit_symbol_map_override(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        p = YahooHistoricalDataProvider(
+            provider=_RecordingYahooBackend(),
+            symbol_map={"NIFTY": "ZZZZ"},
+        )
+        assert p.resolve_symbol("NIFTY") == "ZZZZ"
+        assert p.resolve_symbol("RELIANCE") == "RELIANCE"
+
+    def test_default_map_deterministic(self):
+        from engine.data.historical_provider import (
+            YahooHistoricalDataProvider,
+            _default_yahoo_symbol_map,
+        )
+        assert _default_yahoo_symbol_map() == _default_yahoo_symbol_map()
+        a = YahooHistoricalDataProvider(provider=_RecordingYahooBackend())
+        b = YahooHistoricalDataProvider(provider=_RecordingYahooBackend())
+        assert a._symbol_map == b._symbol_map
+
+    def test_fetch_uses_mapped_symbol_nifty(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _RecordingYahooBackend(_daily_series(3))
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("NIFTY", "1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert backend.calls[0][0] == "^NSEI"
+        assert backend.calls[0][3] == "1d"
+
+    def test_fetch_reliance_1d_returns_candles(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _RecordingYahooBackend(_daily_series(5))
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("RELIANCE", "1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) == 5
+        assert backend.calls[0][0] == "RELIANCE.NS"
+
+    def test_fetch_never_sends_canonical_name(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _RecordingYahooBackend(_daily_series(2))
+        p = YahooHistoricalDataProvider(provider=backend)
+        for instrument, expected in (
+            ("NIFTY", "^NSEI"),
+            ("RELIANCE", "RELIANCE.NS"),
+            ("TCS", "TCS.NS"),
+            ("HDFCBANK", "HDFCBANK.NS"),
+            ("ICICIBANK", "ICICIBANK.NS"),
+        ):
+            backend.calls.clear()
+            p.fetch(_request(instrument, "1D"))
+            assert backend.calls[0][0] == expected
+
+
+
+# ============================================================
+# YAHOO HISTORICAL TIMEZONE NORMALIZATION (Phase 6B fix)
+# ============================================================
+
+
+def _naive_daily_series(n: int, base: datetime = _START) -> tuple[OHLCVCandle, ...]:
+    """Candles with NAIVE timestamps, as yfinance returns for 1D data."""
+
+    naive_base = base.replace(tzinfo=None)
+    return tuple(
+        OHLCVCandle(
+            timestamp=naive_base + timedelta(days=i),
+            open=100.0 + i, high=102.0 + i, low=99.0 + i,
+            close=101.0 + i, volume=1000.0,
+        )
+        for i in range(n)
+    )
+
+
+class TestYahooHistoricalTimezoneNormalization:
+    def test_naive_timestamp_normalized_to_utc(self):
+        from engine.data.historical_provider import _yahoo_timestamp_to_utc
+        naive = datetime(2026, 7, 1)
+        result = _yahoo_timestamp_to_utc(naive)
+        assert result == datetime(2026, 7, 1, tzinfo=UTC)
+        assert result.tzinfo is not None
+
+    def test_aware_timestamp_converted_to_utc(self):
+        from engine.data.historical_provider import _yahoo_timestamp_to_utc
+        tz = timezone(timedelta(hours=5, minutes=30))  # Asia/Kolkata
+        aware = datetime(2026, 7, 1, 9, 15, tzinfo=tz)
+        result = _yahoo_timestamp_to_utc(aware)
+        assert result == datetime(2026, 7, 1, 3, 45, tzinfo=UTC)
+
+    def test_non_datetime_returns_none(self):
+        from engine.data.historical_provider import _yahoo_timestamp_to_utc
+        assert _yahoo_timestamp_to_utc("2026-07-01") is None
+        assert _yahoo_timestamp_to_utc(None) is None
+
+    def test_fetch_normalizes_naive_candles(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _RecordingYahooBackend(_naive_daily_series(3))
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("NIFTY", "1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) == 3
+        for candle in response.candles:
+            assert candle.timestamp.tzinfo is not None
+
+    def test_fetch_normalizes_aware_candles(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        tz = timezone(timedelta(hours=5, minutes=30))
+        aware = tuple(
+            OHLCVCandle(
+                timestamp=datetime(2026, 7, 1, 9, 15, tzinfo=tz) + timedelta(days=i),
+                open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0,
+            )
+            for i in range(3)
+        )
+        backend = _RecordingYahooBackend(aware)
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("RELIANCE", "1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert all(c.timestamp.tzinfo is not None for c in response.candles)
+        assert response.candles[0].timestamp == datetime(2026, 7, 1, 3, 45, tzinfo=UTC)
+
+    def test_fetch_multiple_candles_chronological(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _RecordingYahooBackend(_naive_daily_series(5))
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("NIFTY", "1D"))
+        timestamps = [c.timestamp for c in response.candles]
+        assert timestamps == sorted(timestamps)
+
+    def test_fetch_mixed_naive_and_aware(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        tz = timezone(timedelta(hours=5, minutes=30))
+        mixed = (
+            OHLCVCandle(timestamp=datetime(2026, 7, 1), open=1, high=2, low=0.5, close=1.5, volume=1),
+            OHLCVCandle(timestamp=datetime(2026, 7, 2, 9, 15, tzinfo=tz), open=1, high=2, low=0.5, close=1.5, volume=1),
+        )
+        backend = _RecordingYahooBackend(mixed)
+        p = YahooHistoricalDataProvider(provider=backend)
+        response = p.fetch(_request("TCS", "1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert all(c.timestamp.tzinfo is not None for c in response.candles)
+
+    def test_validation_still_rejects_manually_created_naive_candle(self):
+        from engine.data.historical_validation import HistoricalDataValidator
+        naive = OHLCVCandle(
+            timestamp=datetime(2026, 7, 1),  # naive — must be rejected
+            open=100.0, high=102.0, low=99.0, close=101.0, volume=1000.0,
+        )
+        accepted, issues = HistoricalDataValidator.validate(
+            (naive,), instrument="NIFTY", timeframe="1D",
+            reference_now=datetime(2026, 8, 2, tzinfo=UTC),
+        )
+        assert accepted == ()
+        assert any(i.error.name == "NAIVE_TIMESTAMP" for i in issues)
+
+    def test_reliance_1d_fake_fetch_produces_accepted_candles(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        from engine.data.historical_service import HistoricalMarketDataService
+        backend = _RecordingYahooBackend(_naive_daily_series(23, datetime(2026, 7, 1, tzinfo=UTC).replace(tzinfo=None)))
+        p = YahooHistoricalDataProvider(provider=backend)
+        svc = HistoricalMarketDataService(provider=p)
+        result = svc.fetch_historical(
+            _request("RELIANCE", "1D",
+                     datetime(2026, 7, 1, tzinfo=UTC),
+                     datetime(2026, 8, 1, tzinfo=UTC)),
+            reference_now=datetime(2026, 8, 2, tzinfo=UTC),
+        )
+        assert result.status.name == "AVAILABLE"
+        assert result.provenance.records_received == 23
+        assert result.provenance.records_accepted == 23
+        assert result.provenance.records_rejected == 0
+
+    def test_nifty_1d_fake_fetch_produces_accepted_candles(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        from engine.data.historical_service import HistoricalMarketDataService
+        backend = _RecordingYahooBackend(_naive_daily_series(23, datetime(2026, 7, 1, tzinfo=UTC).replace(tzinfo=None)))
+        p = YahooHistoricalDataProvider(provider=backend)
+        svc = HistoricalMarketDataService(provider=p)
+        result = svc.fetch_historical(
+            _request("NIFTY", "1D",
+                     datetime(2026, 7, 1, tzinfo=UTC),
+                     datetime(2026, 8, 1, tzinfo=UTC)),
+            reference_now=datetime(2026, 8, 2, tzinfo=UTC),
+        )
+        assert result.status.name == "AVAILABLE"
+        assert result.provenance.records_received == 23
+        assert result.provenance.records_accepted == 23
+        assert result.provenance.records_rejected == 0
+
+
+# ============================================================
+# HISTORICAL PERSISTENCE ROUND-TRIP + POST-WRITE VERIFICATION
+# (Phase 6B persistence consistency fix)
+# ============================================================
+
+
+def _utc_daily_series(n: int, base: datetime | None = None) -> tuple[OHLCVCandle, ...]:
+    """UTC-aware daily candles (as the fixed Yahoo provider returns)."""
+
+    start = base or datetime(2026, 7, 1, tzinfo=UTC)
+    return tuple(
+        OHLCVCandle(
+            timestamp=start + timedelta(days=i),
+            open=100.0 + i, high=102.0 + i, low=99.0 + i,
+            close=101.0 + i, volume=1000.0,
+        )
+        for i in range(n)
+    )
+
+
+def _yahoo_ingest(tmp_path, instrument: str, candles):
+    """Ingest via a fake Yahoo backend into a fresh store."""
+
+    from engine.data.historical_provider import YahooHistoricalDataProvider
+    from engine.data.historical_service import HistoricalMarketDataService
+    from engine.data.historical_store import HistoricalDataStore
+
+    backend = _RecordingYahooBackend(candles)
+    provider = YahooHistoricalDataProvider(provider=backend)
+    store = HistoricalDataStore(tmp_path)
+    svc = HistoricalMarketDataService(provider=provider, store=store)
+    request = _request(
+        instrument, "1D",
+        datetime(2026, 7, 1, tzinfo=UTC),
+        datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    result = svc.ingest(request, reference_now=datetime(2026, 8, 2, tzinfo=UTC))
+    return result, store
+
+
+class TestHistoricalPersistenceRoundTrip:
+    def test_nifty_ingest_persist_reload(self, tmp_path):
+        candles = _utc_daily_series(23)
+        result, store = _yahoo_ingest(tmp_path, "NIFTY", candles)
+        assert result.store is not None
+        assert result.store.records_added == 23
+        assert result.store.total_candles == 23
+        assert result.store.reload_verified is True
+        reloaded = store.load_candles("NIFTY", "1D")
+        assert len(reloaded) == 23
+        assert [c.timestamp for c in reloaded] == [c.timestamp for c in candles]
+        assert [c.close for c in reloaded] == [c.close for c in candles]
+
+    def test_reliance_ingest_persist_reload(self, tmp_path):
+        candles = _utc_daily_series(23)
+        result, store = _yahoo_ingest(tmp_path, "RELIANCE", candles)
+        assert result.store is not None
+        assert result.store.records_added == 23
+        assert result.store.total_candles == 23
+        assert result.store.reload_verified is True
+        reloaded = store.load_candles("RELIANCE", "1D")
+        assert len(reloaded) == 23
+        assert [c.timestamp for c in reloaded] == [c.timestamp for c in candles]
+
+    def test_persisted_file_actually_contains_candles(self, tmp_path):
+        import json as _json
+        candles = _utc_daily_series(23)
+        result, store = _yahoo_ingest(tmp_path, "NIFTY", candles)
+        payload = _json.loads(
+            (tmp_path / "NIFTY" / "1D" / "candles.json").read_text(encoding="utf-8"),
+        )
+        assert len(payload["candles"]) == 23
+        assert payload["candles"][0]["timestamp"].startswith("2026-07-01")
+
+    def test_stale_empty_file_is_merged_not_left_empty(self, tmp_path):
+        """The exact reported state: a stale EMPTY candles.json from an
+        earlier EMPTY-status ingestion must be merged into, never left
+        empty after a successful ingestion."""
+        import json as _json
+        dataset_dir = tmp_path / "NIFTY" / "1D"
+        dataset_dir.mkdir(parents=True)
+        (dataset_dir / "candles.json").write_text(
+            '{"candles":[],"instrument":"NIFTY","schema_version":1,"timeframe":"1D"}',
+            encoding="utf-8",
+        )
+        candles = _utc_daily_series(23)
+        result, store = _yahoo_ingest(tmp_path, "NIFTY", candles)
+        assert result.store.records_added == 23
+        assert result.store.records_existing == 0
+        assert result.store.total_candles == 23
+        payload = _json.loads(
+            (dataset_dir / "candles.json").read_text(encoding="utf-8"),
+        )
+        assert len(payload["candles"]) == 23
+        assert len(store.load_candles("NIFTY", "1D")) == 23
+
+    def test_reingestion_idempotent_counts(self, tmp_path):
+        candles = _utc_daily_series(23)
+        _yahoo_ingest(tmp_path, "NIFTY", candles)
+        result2, store = _yahoo_ingest(tmp_path, "NIFTY", candles)
+        assert result2.store.records_added == 0
+        assert result2.store.records_existing == 23
+        assert result2.store.total_candles == 23
+        assert len(store.load_candles("NIFTY", "1D")) == 23
+
+    def test_total_candles_read_back_from_disk(self, tmp_path):
+        """total_candles must reflect the reloaded persisted file, not
+        the in-memory count."""
+        from engine.data.historical_store import HistoricalDataStore
+        store = HistoricalDataStore(tmp_path)
+        candles = _utc_daily_series(5)
+        added, existing, total, path = store.store("TCS", "1D", candles)
+        assert added == 5
+        assert total == len(store.load_candles("TCS", "1D")) == 5
+
+    def test_post_write_verification_raises_on_mismatch(self, tmp_path, monkeypatch):
+        """A platform-level write failure (sync revert / AV interference)
+        must surface as HistoricalDataIntegrityError, never a false
+        success report. Narrowly-scoped monkeypatch simulates the write
+        landing with wrong content (POSIX cannot fabricate OneDrive/AV
+        reverts deterministically)."""
+        import json as _json
+        from engine.data.historical_store import (
+            HistoricalDataIntegrityError,
+            HistoricalDataStore,
+        )
+        store = HistoricalDataStore(tmp_path)
+        original = store._atomic_write
+
+        def bad_write(target, text):
+            payload = _json.loads(text)
+            payload["candles"] = []  # simulate a reverted/emptied write
+            original(target, _json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+        monkeypatch.setattr(store, "_atomic_write", bad_write)
+        with pytest.raises(HistoricalDataIntegrityError):
+            store.store("NIFTY", "1D", _utc_daily_series(3))
+
+    def test_load_historical_after_ingest(self, tmp_path):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        from engine.data.historical_service import HistoricalMarketDataService
+        from engine.data.historical_store import HistoricalDataStore
+        candles = _utc_daily_series(23)
+        backend = _RecordingYahooBackend(candles)
+        svc = HistoricalMarketDataService(
+            provider=YahooHistoricalDataProvider(provider=backend),
+            store=HistoricalDataStore(tmp_path),
+        )
+        svc.ingest(
+            _request("RELIANCE", "1D",
+                     datetime(2026, 7, 1, tzinfo=UTC),
+                     datetime(2026, 8, 1, tzinfo=UTC)),
+            reference_now=datetime(2026, 8, 2, tzinfo=UTC),
+        )
+        loaded = svc.load_historical("RELIANCE", "1D")
+        assert loaded.count == 23
+        assert loaded.source_count == 23
+        assert loaded.first_timestamp == candles[0].timestamp
+        assert loaded.last_timestamp == candles[-1].timestamp
+
+    def test_cli_report_shows_reload_check(self, tmp_path):
+        import sys as _sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from ingest_historical_data import format_report
+        candles = _utc_daily_series(23)
+        result, _store = _yahoo_ingest(tmp_path, "NIFTY", candles)
+        report = format_report(result)
+        assert "Reload check    : PASS (23 candles reloaded" in report
+        assert "Records Added   : 23" in report
+        assert "Total Stored    : 23" in report

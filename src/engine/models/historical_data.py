@@ -445,10 +445,17 @@ class HistoricalStoreResult:
         (re-ingested duplicates are NOT re-stored).
 
     total_candles
-        Total stored candles after the operation.
+        Total stored candles after the operation, READ BACK from the
+        persisted file (never the in-memory count) so the report always
+        reflects what is actually persisted and reloadable.
 
     path
         The candle file path written.
+
+    reload_verified
+        True when the persisted file was reloaded after the write and
+        the reloaded candle count matched the written count (the
+        post-write persistence guarantee).
     """
 
     instrument: str
@@ -457,6 +464,7 @@ class HistoricalStoreResult:
     records_existing: int
     total_candles: int
     path: str
+    reload_verified: bool = False
 
 
 @dataclass(frozen=True, slots=True)
