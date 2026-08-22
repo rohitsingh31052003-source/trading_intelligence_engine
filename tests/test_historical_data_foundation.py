@@ -1505,3 +1505,242 @@ class TestHistoricalPersistenceRoundTrip:
         assert "Reload check    : PASS (23 candles reloaded" in report
         assert "Records Added   : 23" in report
         assert "Total Stored    : 23" in report
+
+
+# ============================================================
+# YAHOO HISTORICAL WINDOWED FETCH / RETENTION LIMIT (Phase 6B fix)
+# ============================================================
+
+
+class _WindowedFakeYahooBackend:
+    """Fake YahooFinanceProvider backend that records every requested
+    window and serves candles filtered to each window (deterministic)."""
+
+    def __init__(self, candles=(), fail_windows: tuple[int, ...] = ()):
+        self.windows: list[tuple[object, object, object, str]] = []
+        self._candles = tuple(candles)
+        self._fail_windows = frozenset(fail_windows)
+
+    def get_history(self, symbol, start, end, interval):
+        self.windows.append((symbol, start, end, interval))
+        if (len(self.windows) - 1) in self._fail_windows:
+            raise RuntimeError("simulated window failure")
+        return [
+            c for c in self._candles
+            if start <= c.timestamp < end
+        ]
+
+
+def _intraday_series(start: datetime, n: int, step_minutes: int = 15) -> tuple[OHLCVCandle, ...]:
+    return tuple(
+        OHLCVCandle(
+            timestamp=start + timedelta(minutes=step_minutes * i),
+            open=100.0 + i * 0.01, high=101.0 + i * 0.01,
+            low=99.0 + i * 0.01, close=100.5 + i * 0.01, volume=500.0,
+        )
+        for i in range(n)
+    )
+
+
+_ANCHOR = datetime(2026, 8, 22, tzinfo=UTC)
+
+
+class TestYahooHistoricalWindowedFetch:
+    def _provider(self, candles=(), **kw):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        backend = _WindowedFakeYahooBackend(candles, **kw)
+        return YahooHistoricalDataProvider(provider=backend), backend
+
+    def test_long_intraday_range_split_into_bounded_windows(self):
+        candles = _intraday_series(datetime(2026, 6, 25, tzinfo=UTC), 200)
+        p, backend = self._provider(candles)
+        req = _request(
+            "NIFTY", "15m",
+            datetime(2024, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=_ANCHOR)
+        assert response.status is ProviderResponseStatus.OK
+        assert len(backend.windows) >= 1
+        for _sym, ws, we, interval in backend.windows:
+            assert interval == "15m"
+            assert (we - ws).days <= 58
+
+    def test_retention_floor_clips_requested_start(self):
+        candles = _intraday_series(datetime(2026, 7, 1, tzinfo=UTC), 100)
+        p, backend = self._provider(candles)
+        req = _request(
+            "RELIANCE", "15m",
+            datetime(2024, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=_ANCHOR)
+        floor = _ANCHOR - timedelta(days=58)
+        first_window_start = backend.windows[0][1]
+        assert first_window_start == floor  # clipped, NOT the 2024 start
+        assert "retention" in response.reason
+        assert "not fabricated" in response.reason
+
+    def test_range_entirely_before_retention_is_honest_empty(self):
+        p, backend = self._provider(_intraday_series(datetime(2024, 1, 1, tzinfo=UTC), 50))
+        req = _request(
+            "NIFTY", "15m",
+            datetime(2024, 1, 1, tzinfo=UTC),
+            datetime(2024, 6, 1, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=_ANCHOR)
+        assert response.status is ProviderResponseStatus.EMPTY
+        assert "retention window" in response.reason
+        assert backend.windows == []  # no hopeless requests issued
+
+    def test_windows_merged_deduped_chronological(self):
+        anchor = _ANCHOR + timedelta(days=65)
+        floor = anchor - timedelta(days=58)
+        candles = _intraday_series(floor, 40)
+        p, _backend = self._provider(candles)
+        req = _request(
+            "TCS", "15m",
+            floor - timedelta(days=10),
+            anchor,
+        )
+        response = p.fetch(req, reference_now=anchor)
+        assert response.status is ProviderResponseStatus.OK
+        ts = [c.timestamp for c in response.candles]
+        assert ts == sorted(ts)
+        assert len(ts) == len(set(ts))  # boundary overlap deduped
+
+    def test_short_daily_range_single_window_unchanged(self):
+        candles = _utc_daily_series(23)
+        p, backend = self._provider(candles)
+        req = _request(
+            "NIFTY", "1D",
+            datetime(2026, 7, 1, tzinfo=UTC),
+            datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=_ANCHOR)
+        assert response.status is ProviderResponseStatus.OK
+        assert len(backend.windows) == 1
+        assert response.reason == ""  # no clipping note for daily
+
+    def test_daily_range_never_retention_clipped(self):
+        p, backend = self._provider(_utc_daily_series(5, datetime(2010, 1, 1, tzinfo=UTC)))
+        req = _request(
+            "NIFTY", "1D",
+            datetime(2010, 1, 1, tzinfo=UTC),
+            datetime(2010, 2, 1, tzinfo=UTC),
+        )
+        p.fetch(req, reference_now=_ANCHOR)
+        assert backend.windows[0][1] == datetime(2010, 1, 1, tzinfo=UTC)
+
+    def test_all_windows_failing_is_error(self):
+        p, _backend = self._provider(fail_windows=(0,))
+        req = _request(
+            "NIFTY", "15m",
+            datetime(2026, 8, 20, tzinfo=UTC),
+            datetime(2026, 8, 22, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=_ANCHOR)
+        assert response.status is ProviderResponseStatus.ERROR
+        assert "provider error" in response.reason
+
+    def test_partial_window_failure_still_returns_available_data(self):
+        anchor = datetime(2026, 8, 30, tzinfo=UTC)
+        floor = anchor - timedelta(days=6)  # 1m retention floor
+        candles = _intraday_series(floor + timedelta(days=6), 20, step_minutes=1)
+        p, backend = self._provider(candles, fail_windows=(0,))
+        req = _request(
+            "NIFTY", "1m",  # 6-day windows -> 2 windows over 8 days
+            floor,
+            floor + timedelta(days=8),
+        )
+        response = p.fetch(req, reference_now=anchor)
+        assert len(backend.windows) == 2
+        # First window failed; candles from the second window are kept.
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) > 0
+
+    def test_naive_reference_now_treated_as_utc(self):
+        candles = _intraday_series(datetime(2026, 8, 1, tzinfo=UTC), 10)
+        p, backend = self._provider(candles)
+        req = _request(
+            "NIFTY", "15m",
+            datetime(2026, 8, 1, tzinfo=UTC),
+            datetime(2026, 8, 5, tzinfo=UTC),
+        )
+        response = p.fetch(req, reference_now=datetime(2026, 8, 22))
+        assert response.status is ProviderResponseStatus.OK
+        assert backend.windows[0][1] == datetime(2026, 8, 1, tzinfo=UTC)
+
+    def test_service_threads_reference_now_to_yahoo(self):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        from engine.data.historical_service import HistoricalMarketDataService
+        base = datetime(2026, 7, 15, tzinfo=UTC)
+        backend = _WindowedFakeYahooBackend(_intraday_series(base, 200))
+        svc = HistoricalMarketDataService(
+            provider=YahooHistoricalDataProvider(provider=backend),
+        )
+        result = svc.fetch_historical(
+            _request(
+                "NIFTY", "15m",
+                datetime(2024, 8, 1, tzinfo=UTC),
+                datetime(2026, 8, 1, tzinfo=UTC),
+            ),
+            reference_now=_ANCHOR,
+        )
+        floor = _ANCHOR - timedelta(days=58)
+        assert backend.windows[0][1] == floor
+        assert result.provenance.records_received > 0
+        assert result.provenance.records_accepted > 0
+
+    def test_service_with_legacy_provider_without_kwarg_still_works(self):
+        class _LegacyProvider:
+            provider_name = "legacy"
+
+            def is_available(self):
+                return True
+
+            def supports(self, instrument, timeframe):
+                return True
+
+            def fetch(self, request):  # no reference_now kwarg
+                return HistoricalProviderResponse(
+                    provider_name="legacy",
+                    status=ProviderResponseStatus.OK,
+                    candles=_utc_daily_series(3),
+                )
+
+        from engine.data.historical_service import HistoricalMarketDataService
+        svc = HistoricalMarketDataService(provider=_LegacyProvider())
+        result = svc.fetch_historical(
+            _request("NIFTY", "1D",
+                     datetime(2026, 7, 1, tzinfo=UTC),
+                     datetime(2026, 8, 1, tzinfo=UTC)),
+            reference_now=_ANCHOR,
+        )
+        assert result.provenance.records_accepted == 3
+
+    def test_nifty_15m_fake_ingest_persists_retrievable_window(self, tmp_path):
+        from engine.data.historical_provider import YahooHistoricalDataProvider
+        from engine.data.historical_service import HistoricalMarketDataService
+        from engine.data.historical_store import HistoricalDataStore
+        base = datetime(2026, 7, 1, tzinfo=UTC)
+        candles = _intraday_series(base, 300)
+        svc = HistoricalMarketDataService(
+            provider=YahooHistoricalDataProvider(
+                provider=_WindowedFakeYahooBackend(candles),
+            ),
+            store=HistoricalDataStore(tmp_path),
+        )
+        result = svc.ingest(
+            _request(
+                "NIFTY", "15m",
+                datetime(2024, 8, 1, tzinfo=UTC),
+                datetime(2026, 8, 1, tzinfo=UTC),
+            ),
+            reference_now=_ANCHOR,
+        )
+        assert result.store is not None
+        assert result.store.records_added == 300
+        assert result.store.total_candles == 300
+        assert result.store.reload_verified is True
+        assert len(svc.load_historical("NIFTY", "15m").candles) == 300

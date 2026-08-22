@@ -350,6 +350,30 @@ class YahooHistoricalDataProvider:
         "1D": "1d",
     }
 
+    #: Per-interval Yahoo window cap in days (SAFETY-MARGINED). Yahoo
+    #: rejects an intraday request whose START is older than its
+    #: retention window (~7 days for 1m, ~60 days for <=30m/90m, ~730
+    #: days for hourly). Daily data is retained for decades. Mirrors
+    #: the established live-provider range fix; provider-specific Yahoo
+    #: formatting stays inside this provider.
+    _INTERVAL_LIMIT_DAYS: dict[str, int] = {
+        "1m": 6,
+        "2m": 58,
+        "5m": 58,
+        "15m": 58,
+        "30m": 58,
+        "90m": 58,
+        "1h": 725,
+        "1D": 1825,
+    }
+
+    #: Intervals whose retention window is limited (older data does not
+    #: exist on Yahoo at all). Daily data has no practical retention
+    #: limit, so the retention floor never applies to it.
+    _INTRADAY_LIMITED: frozenset = frozenset(
+        {"1m", "2m", "5m", "15m", "30m", "90m", "1h"},
+    )
+
     def __init__(self, provider=None, symbol_map: dict[str, str] | None = None) -> None:
         self._symbol_map = (
             dict(symbol_map) if symbol_map else _default_yahoo_symbol_map()
@@ -378,6 +402,8 @@ class YahooHistoricalDataProvider:
     def fetch(
         self,
         request: HistoricalDataRequest,
+        *,
+        reference_now: datetime | None = None,
     ) -> HistoricalProviderResponse:
         if self._provider is None:
             return HistoricalProviderResponse(
@@ -395,52 +421,102 @@ class YahooHistoricalDataProvider:
                 status=ProviderResponseStatus.UNSUPPORTED,
                 reason=f"timeframe {request.timeframe!r} not supported by Yahoo.",
             )
-        try:
-            candles = self._provider.get_history(
-                self.resolve_symbol(request.instrument),
-                request.start,
-                request.end,
-                self._INTERVALS[canonical],
+        symbol = self.resolve_symbol(request.instrument)
+        interval = self._INTERVALS[canonical]
+        max_days = self._INTERVAL_LIMIT_DAYS[canonical]
+        anchor = reference_now or datetime.now(UTC)
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+        # RETENTION FLOOR: Yahoo rejects an intraday request whose start
+        # is older than its retention window, so the requested start is
+        # clipped to the retrievable boundary. Data before the floor
+        # genuinely does not exist on Yahoo and is NEVER fabricated; the
+        # response reason reports the clip honestly.
+        effective_start = request.start
+        clipped = False
+        if canonical in self._INTRADAY_LIMITED:
+            floor = anchor - timedelta(days=max_days)
+            if request.end <= floor:
+                return HistoricalProviderResponse(
+                    provider_name=self.provider_name,
+                    status=ProviderResponseStatus.EMPTY,
+                    candles=(),
+                    reason=(
+                        f"Yahoo retains {interval} data for approximately "
+                        f"the last {max_days} days; the requested range "
+                        f"({request.start.date()} -> {request.end.date()}) "
+                        "is entirely outside that retention window."
+                    ),
+                )
+            if request.start < floor:
+                effective_start = floor
+                clipped = True
+        # WINDOWED FETCH: split long ranges into per-interval windows
+        # Yahoo accepts, then merge + dedupe + sort chronologically.
+        windows: list[tuple[datetime, datetime]] = []
+        cursor = effective_start
+        while cursor < request.end:
+            windows.append(
+                (cursor, min(cursor + timedelta(days=max_days), request.end)),
             )
-        except Exception as exc:
-            return HistoricalProviderResponse(
-                provider_name=self.provider_name,
-                status=ProviderResponseStatus.ERROR,
-                reason=f"provider error: {exc}",
-            )
+            cursor = cursor + timedelta(days=max_days)
+        merged: dict[str, OHLCVCandle] = {}
+        errors: list[str] = []
+        for window_start, window_end in windows:
+            try:
+                window_candles = self._provider.get_history(
+                    symbol, window_start, window_end, interval,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            for candle in window_candles or []:
+                # Normalize provider-specific timestamps to
+                # timezone-aware UTC BEFORE the canonical OHLCVCandle
+                # objects reach validation (naive -> UTC, aware -> UTC).
+                ts = _yahoo_timestamp_to_utc(
+                    getattr(candle, "timestamp", None))
+                if ts is None:
+                    continue  # malformed record; the service reports counts
+                merged[ts.isoformat()] = (
+                    candle
+                    if ts is candle.timestamp
+                    else replace(candle, timestamp=ts)
+                )
+        candles = sorted(merged.values(), key=lambda c: c.timestamp)
         if not candles:
+            if errors and len(errors) == len(windows):
+                return HistoricalProviderResponse(
+                    provider_name=self.provider_name,
+                    status=ProviderResponseStatus.ERROR,
+                    reason=f"provider error: {errors[0]}",
+                )
+            reason = "Yahoo returned no candles for the request."
+            if clipped:
+                reason += (
+                    f" Yahoo retains {interval} data for approximately "
+                    f"the last {max_days} days; older portions of the "
+                    "requested range are unavailable from Yahoo."
+                )
             return HistoricalProviderResponse(
                 provider_name=self.provider_name,
                 status=ProviderResponseStatus.EMPTY,
                 candles=(),
-                reason="Yahoo returned no candles for the request.",
+                reason=reason,
             )
-        # Normalize provider-specific timestamps to timezone-aware UTC
-        # BEFORE the canonical OHLCVCandle objects reach validation.
-        normalized = []
-        for candle in candles:
-            ts = _yahoo_timestamp_to_utc(
-                getattr(candle, "timestamp", None))
-            if ts is None:
-                continue  # malformed record; the service reports counts
-            if ts is candle.timestamp:
-                normalized.append(candle)
-            else:
-                normalized.append(replace(candle, timestamp=ts))
-        if not normalized:
-            return HistoricalProviderResponse(
-                provider_name=self.provider_name,
-                status=ProviderResponseStatus.EMPTY,
-                candles=(),
-                reason=(
-                    "Yahoo returned candles but none had a usable "
-                    "timestamp after UTC normalization."
-                ),
+        reason = ""
+        if clipped:
+            reason = (
+                f"Requested start predates Yahoo's {interval} retention "
+                f"window (~{max_days} days); data before "
+                f"{effective_start.date()} is unavailable from Yahoo and "
+                "was not fabricated."
             )
         return HistoricalProviderResponse(
             provider_name=self.provider_name,
             status=ProviderResponseStatus.OK,
-            candles=tuple(normalized),
+            candles=tuple(candles),
+            reason=reason,
         )
 
 

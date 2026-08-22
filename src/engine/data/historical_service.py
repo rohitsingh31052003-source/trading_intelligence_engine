@@ -34,6 +34,7 @@ only.
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from typing import Sequence
 
@@ -307,7 +308,14 @@ class HistoricalMarketDataService:
             )
 
         try:
-            response = provider.fetch(request)
+            # Thread the deterministic reference time to providers that
+            # accept it (additive kwarg; e.g. the Yahoo provider anchors
+            # its intraday retention window to it). Providers whose
+            # contract predates the kwarg are called unchanged.
+            if "reference_now" in inspect.signature(provider.fetch).parameters:
+                response = provider.fetch(request, reference_now=now)
+            else:
+                response = provider.fetch(request)
         except Exception as exc:
             provenance = HistoricalProvenance(
                 provider=provider.provider_name,
