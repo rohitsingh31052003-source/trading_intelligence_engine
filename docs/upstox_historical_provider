@@ -46,22 +46,39 @@ symbols (`RELIANCE.NS` is not a valid Upstox key). Resolution is isolated to
 the provider layer via an explicit mapping:
 
 ```python
-"RELIANCE" -> "NSE_EQ|INE002A01018"   # verified against the real API
+"RELIANCE"  -> "NSE_EQ|INE002A01018"   # verified against the real API
+"TCS"       -> "NSE_EQ|INE467B01029"   # NSE_EQ segment, Equities ISIN
+"HDFCBANK"  -> "NSE_EQ|INE040A01034"
+"ICICIBANK" -> "NSE_EQ|INE090A01021"
+"NIFTY"     -> "NSE_INDEX|Nifty 50"    # NSE_INDEX segment, exact Upstox name
 ```
 
-Only keys verified against the real API are mapped. An unknown instrument
-raises `KeyError` (via `resolve_instrument_key`) and `fetch` reports
-`UNSUPPORTED` — it fails clearly rather than silently requesting an invalid
-Upstox key. The map is derived from the existing canonical universe
-(`engine.config.universe`); **no second universe** is introduced. To add an
-instrument key, extend `_default_upstox_instrument_key_map()` or pass
-`instrument_key_map=` to the constructor.
+The mapping covers the **confirmed research universe** (NIFTY + the four
+equities). Equities use the `NSE_EQ` segment keyed by the company ISIN; the
+NIFTY 50 index uses the `NSE_INDEX` segment keyed by the exact Upstox index
+name (`NSE_INDEX|Nifty 50` — the key contains a pipe separator and a space).
+
+URL encoding: the instrument key is percent-encoded at URL construction time
+with `urllib.parse.quote(instrument_key, safe="|")` — the pipe separator is
+preserved (verified live for the equity keys) and the space in the NIFTY key
+is encoded (`NSE_INDEX|Nifty%2050`), so the key stays a single URL path
+segment. The end-to-end URL retains the Upstox V3
+`/to_date/from_date/` ordering.
+
+Only keys verified against the real API / the established controlled Upstox
+verification are mapped. An unknown instrument raises `KeyError` (via
+`resolve_instrument_key`) and `fetch` reports `UNSUPPORTED` — it fails clearly
+rather than silently requesting an invalid Upstox key. The map is derived from
+the existing canonical universe (`engine.config.universe`); **no second
+universe** is introduced. To add an instrument key, extend
+`_default_upstox_instrument_key_map()` or pass `instrument_key_map=` to the
+constructor.
 
 ## Monthly chunking
 
-A requested intraday window is split into **bounded monthly calendar chunks**
-and every chunk is requested separately — a multi-year intraday range is never
-sent as one giant request. Example: `2022-01-01 -> 2023-01-01` becomes
+A requested window (intraday OR daily) is split into **bounded monthly
+calendar chunks** and every chunk is requested separately — a multi-year range
+is never sent as one giant request. Example: `2022-01-01 -> 2023-01-01` becomes
 12 monthly requests (`2022-01-01 -> 2022-02-01`, ..., `2022-12-01 ->
 2023-01-01`). Chunk boundaries follow calendar months; no assumption that every
 month has the same number of candles; missing trading days are never
@@ -75,11 +92,14 @@ chronological order BEFORE the canonical validation layer.
 | Timeframe | Upstox unit / interval |
 |-----------|------------------------|
 | `15m`     | `minutes` / `15`       |
+| `1D`      | `days` / `1`           |
 
-Only native Upstox intervals are used — no resampling / fabrication. Other
-timeframes report `supports() -> False` and `fetch() -> UNSUPPORTED`.
-`15m` / `15M` alias to the same canonical label via the existing timeframe
-utilities.
+Only native Upstox intervals are used — no resampling / fabrication, and daily
+data comes DIRECTLY from Upstox (never aggregated from 15m candles). The daily
+endpoint uses the verified V3 spelling `days/1` (NOT `day/1`). Supported
+aliases: `15m` / `15M` and `1D` / `1d` canonicalize via the existing timeframe
+utilities. Other timeframes report `supports() -> False` and `fetch() ->
+UNSUPPORTED`.
 
 ## Request details
 
@@ -117,6 +137,34 @@ Upstox returns timezone-aware `+05:30` timestamps
 timestamps are still rejected by the existing validator (the normalization
 never weakens the canonical clock).
 
+## Daily response normalization rule (`1D` / `days/1`)
+
+A genuine Upstox **daily** candle is timestamped at `00:00:00+05:30` (IST) —
+the exchange-day start label — per the official V3 daily-response examples
+(`data.candles` rows such as `["2025-01-01T00:00:00+05:30", ...]`). Some daily
+responses may nevertheless **embed intraday-related rows** (for example
+`09:15:00+05:30` intraday timestamps that share the same trading day).
+
+The deterministic, provider-specific rule implemented BEFORE canonical candle
+construction is:
+
+* For `unit == days` responses only, a row is a valid DAILY candle **iff** its
+  IST-local time-of-day is exactly midnight (`00:00:00`).
+* Every other row (any non-midnight IST time-of-day) is an embedded
+  intraday-related row and is **FILTERED** — never stored, never repaired,
+  never aggregated into a daily candle.
+* Filtered rows are **counted** and reported in the fetch response reason, so
+  no data is silently dropped.
+* A daily response consisting entirely of embedded intraday rows yields an
+  honest empty chunk (never fabricated daily candles).
+* Malformed rows (bad shape / non-finite OHLCV / naive or unparseable
+  timestamps) still raise `ValueError` and become an honest chunk `ERROR`.
+
+Daily rows are also subjected to the same UTC normalization
+(`00:00:00+05:30` -> `18:30:00` UTC of the PRIOR day) and duplicate dedupe as
+every other timeframe. `15m` (minute) responses are NEVER filtered by this
+rule.
+
 ## Date semantics
 
 The requested `[start, end]` window from `HistoricalDataRequest` is respected
@@ -126,14 +174,29 @@ candles outside `[start, end]` are dropped. No look-ahead behavior; no
 silently extended range; `reference_now` future-rejection stays at the service
 layer.
 
+Intraday (`15m`) acceptance uses the strict UTC `[start, end]` comparison. For
+DAILY (`1D`) responses the acceptance criterion is the candle's IST trading-day
+label within the requested day labels `[start.date(), end.date()]` — this
+matches the inclusive day labels the API was asked to produce. Without this
+rule a genuine first-requested-day daily candle (UTC `18:30` of the PRIOR
+day) would be wrongly dropped by a strict UTC comparison.
+
 ## Usage
 
 ```bash
-# One real Upstox monthly ingestion:
+# One real Upstox monthly ingestion (15m):
 python scripts/ingest_historical_data.py \
     --instrument RELIANCE \
     --timeframe 15m \
     --start 2022-12-01 \
+    --end 2023-01-01 \
+    --provider upstox-historical
+
+# One real Upstox daily ingestion (1D, days/1 endpoint):
+python scripts/ingest_historical_data.py \
+    --instrument TCS \
+    --timeframe 1D \
+    --start 2020-01-01 \
     --end 2023-01-01 \
     --provider upstox-historical
 ```
@@ -168,10 +231,10 @@ never touch the network and require no token.
 
 | | Yahoo (`yahoo-historical`) | Upstox (`upstox-historical`) |
 |---|---|---|
-| Instrument identity | Yahoo symbols (`RELIANCE.NS`, `^NSEI`) | Upstox instrument keys (`NSE_EQ|INE002A01018`) |
+| Instrument identity | Yahoo symbols (`RELIANCE.NS`, `^NSEI`) | Upstox instrument keys (`NSE_EQ|INE002A01018`, `NSE_INDEX|Nifty 50`) |
 | Availability | optional py packages (`yfinance`/`pandas`) | `UPSTOX_ANALYTICS_TOKEN` env var |
-| Timeframes | `1m`…`1D` | `15m` only (first scope) |
-| Intraday range | retention-window clipped + windowed fetch | monthly calendar chunks |
+| Timeframes | `1m`…`1D` | `15m`, `1D` |
+| Range | retention-window clipped + windowed fetch | monthly calendar chunks |
 | Timestamps | aware/naive normalized to UTC | aware `+05:30` normalized to UTC |
 
 Yahoo remains the live/near-live provider for the dashboard; Upstox is an
@@ -179,9 +242,15 @@ additive **historical** provider. They share the same service/store contract.
 
 ## Limitations
 
-* `15m` is the only implemented timeframe (first scope).
-* Only instrument keys verified against the real API are mapped (currently
-  `RELIANCE`); other instruments are honestly unavailable.
+* Implemented timeframes: `15m` (minute, `minutes/15`) and `1D` (daily,
+  `days/1`). Other timeframes are honestly unavailable.
+* Instrument-key coverage: NIFTY + RELIANCE / TCS / HDFCBANK / ICICIBANK (the
+  confirmed research universe). Other instruments are honestly unavailable
+  until their keys are verified and added to
+  `_default_upstox_instrument_key_map()`.
+* 15m historical availability on Upstox starts approximately 2022 onward;
+  older 15m requests can legitimately return EMPTY and are never treated as an
+  implementation failure. Daily data reaches back much further.
 * Not a full historical corpus downloader — the provider does NOT download the
   whole universe, does NOT download years of data on startup, and there is NO
   scheduler for historical ingestion. Upstox does NOT automatically download
@@ -191,3 +260,7 @@ additive **historical** provider. They share the same service/store contract.
 * Not connected to Phase 6F.
 * Provider-side rate limits / holidays are reported honestly; missing trading
   days are never fabricated.
+* The daily-response normalization rule assumes the documented Upstox daily
+  timestamp convention (`00:00:00+05:30`). If a future Upstox response format
+  differs by historical era, the rule must be re-documented and re-tested —
+  it is deliberately NOT extended to guess unknown formats.

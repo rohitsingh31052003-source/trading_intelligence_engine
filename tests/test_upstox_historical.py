@@ -23,6 +23,8 @@ import pytest
 
 from engine.data.historical_provider import (
     UPSTOX_TOKEN_ENV,
+    UPSTOX_UNIT_DAYS,
+    UPSTOX_UNIT_MINUTES,
     UPSTOX_USER_AGENT,
     UpstoxHistoricalDataProvider,
     _upstox_monthly_chunks,
@@ -203,12 +205,12 @@ class TestTimeframeSupport:
 
     def test_unsupported_timeframe(self):
         p = UpstoxHistoricalDataProvider(token=_TOKEN)
-        for timeframe in ("1D", "1d", "30m", "1h", "5m", "bogus"):
+        for timeframe in ("30m", "1h", "5m", "bogus"):
             assert p.supports("RELIANCE", timeframe) is False
 
     def test_fetch_unsupported_timeframe_error(self):
         p = _make_provider()
-        response = p.fetch(_request(timeframe="1D"))
+        response = p.fetch(_request(timeframe="30m"))
         assert response.status is ProviderResponseStatus.UNSUPPORTED
         assert p._fake.calls == []  # never sent
 
@@ -226,11 +228,11 @@ class TestInstrumentKeyResolution:
     def test_unknown_instrument_raises(self):
         p = UpstoxHistoricalDataProvider(token=_TOKEN)
         with pytest.raises(KeyError):
-            p.resolve_instrument_key("NIFTY")
+            p.resolve_instrument_key("NOTANINSTRUMENT")
 
     def test_unknown_instrument_fetch_reports_unsupported(self):
         p = _make_provider()
-        response = p.fetch(_request(instrument="NIFTY"))
+        response = p.fetch(_request(instrument="NOTANINSTRUMENT"))
         assert response.status is ProviderResponseStatus.UNSUPPORTED
         assert "unknown instrument" in response.reason
         assert p._fake.calls == []  # never sent
@@ -851,3 +853,422 @@ class TestNoRegression:
         assert canonical_timeframe("15m") == "15m"
         assert canonical_timeframe("15M") == "15m"
         assert canonical_timeframe("1D") == "1D"
+
+
+# ============================================================
+# 29. CHECKPOINT 3A — VERIFIED RESEARCH-UNIVERSE KEY MAP
+# (TCS / HDFCBANK / ICICIBANK / NIFTY added; RELIANCE unchanged)
+# ============================================================
+
+
+class TestResearchUniverseKeyMap:
+    def test_tcs_key_mapping(self):
+        # A. TCS -> NSE_EQ instrument key (verified).
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.resolve_instrument_key("TCS") == "NSE_EQ|INE467B01029"
+
+    def test_hdfcbank_key_mapping(self):
+        # B. HDFCBANK -> NSE_EQ instrument key.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.resolve_instrument_key("HDFCBANK") == "NSE_EQ|INE040A01034"
+
+    def test_icicibank_key_mapping(self):
+        # C. ICICIBANK -> NSE_EQ instrument key.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.resolve_instrument_key("ICICIBANK") == "NSE_EQ|INE090A01021"
+
+    def test_nifty_key_mapping(self):
+        # D. NIFTY -> NSE_INDEX|Nifty 50 (the Upstox index key, which
+        # contains a pipe separator and a space).
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.resolve_instrument_key("NIFTY") == "NSE_INDEX|Nifty 50"
+
+    def test_reliance_mapping_regression(self):
+        # F. RELIANCE mapping remains unchanged.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.resolve_instrument_key("RELIANCE") == "NSE_EQ|INE002A01018"
+
+    def test_request_instrument_normalized_to_upper(self):
+        # Requests normalize to upper-case before key resolution, so a
+        # lower-case "nifty" still resolves.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        from engine.data.historical_provider import (
+            _default_upstox_instrument_key_map,
+        )
+        mapping = _default_upstox_instrument_key_map()
+        assert "NIFTY" in mapping
+        assert mapping["NIFTY"] == "NSE_INDEX|Nifty 50"
+
+    def test_no_second_universe(self):
+        # The default map is derived from the canonical universe only; no
+        # extra unverified instruments are guessed.
+        from engine.data.historical_provider import (
+            _default_upstox_instrument_key_map,
+        )
+        mapping = _default_upstox_instrument_key_map()
+        for key in mapping:
+            assert key in ("NIFTY", "RELIANCE", "TCS", "HDFCBANK",
+                           "ICICIBANK")
+
+
+# ============================================================
+# 30. CHECKPOINT 3A — NIFTY URL ENCODING
+# ============================================================
+
+
+class TestNiftyUrlEncoding:
+    def _nifty_url(self, fake=None, timeframe="15m"):
+        import urllib.parse as _urlparse
+        fake = fake or _FakeUrlopen({})
+        p = UpstoxHistoricalDataProvider(token=_TOKEN, urlopen=fake)
+        p.fetch(_request(instrument="NIFTY", timeframe=timeframe))
+        return fake.calls[0][0]
+
+    def test_nifty_instrument_key_quote_unquote(self):
+        import urllib.parse as _urlparse
+        key = "NSE_INDEX|Nifty 50"
+        # The pipe is preserved (safe="|", verified live for equities);
+        # the space is percent-encoded so the URL path stays on one
+        # segment.
+        quoted = _urlparse.quote(key, safe="|")
+        assert quoted == "NSE_INDEX|Nifty%2050"
+        assert _urlparse.unquote(quoted) == key
+
+    def test_nifty_url_contains_encoded_instrument_key(self):
+        # E. The constructed URL percent-encodes the space in the NIFTY
+        # key (pipe preserved) and never contains a raw space.
+        url = self._nifty_url()
+        assert "NSE_INDEX|Nifty%2050" in url
+        assert " " not in url
+
+    def test_nifty_url_still_uses_minutes_15(self):
+        url = self._nifty_url()
+        assert "/minutes/15/" in url
+
+    def test_nifty_url_dates_after_key(self):
+        # The key (with its encoded space) is a single path segment and
+        # the trailing to/from date labels remain intact.
+        url = self._nifty_url(timeframe="1D")
+        assert url.endswith("/2023-01-01/2022-12-01")
+
+
+# ============================================================
+# 31. CHECKPOINT 3A — DAILY (1D) SUPPORT
+# ============================================================
+
+
+#: The verified Upstox V3 daily candle shape: timestamps at
+#: 00:00:00+05:30 (IST) — the daily bar start label.
+def _daily_row(date_iso: str, open_p=18000.0, high=18100.0, low=17900.0,
+               close=18050.0, volume=1_000_000.0, oi=0) -> list:
+    return [f"{date_iso}T00:00:00+05:30", open_p, high, low, close, volume, oi]
+
+
+def _intraday_embedded_row(date_iso: str) -> list:
+    """A known NON-daily (embedded intraday) row in a daily response."""
+    return [f"{date_iso}T09:15:00+05:30", 18010.0, 18020.0, 17990.0,
+            18005.0, 50000.0, 0]
+
+
+def _daily_url(from_date: str, to_date: str) -> str:
+    """The exact Upstox URL the provider builds for a RELIANCE 1D
+    monthly chunk (``unit=days``, ``interval=1``; the RELIANCE key has
+    no space so quote(..., safe="|") leaves it unchanged)."""
+    return (
+        "https://api.upstox.com/v3/historical-candle/"
+        f"NSE_EQ|INE002A01018/days/1/{to_date}/{from_date}"
+    )
+
+
+class TestDailySupport:
+    def test_daily_unit_constants(self):
+        assert UPSTOX_UNIT_DAYS == "days"
+        assert UPSTOX_UNIT_MINUTES == "minutes"
+
+    def test_1d_is_supported(self):
+        # G. 1D is supported; the 1d/1D aliases canonicalize.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.supports("RELIANCE", "1D") is True
+        assert p.supports("RELIANCE", "1d") is True
+
+    def test_15m_remains_supported(self):
+        # H. 15m support is unchanged.
+        p = UpstoxHistoricalDataProvider(token=_TOKEN)
+        assert p.supports("RELIANCE", "15m") is True
+        assert p.supports("RELIANCE", "15M") is True
+
+    def test_1d_uses_days_1(self):
+        # I. A 1D fetch builds a /days/1/ URL.
+        rows = [_daily_row("2022-12-01"), _daily_row("2022-12-02")]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.OK
+        url = p._fake.calls[0][0]
+        assert "/days/1/" in url
+        assert "/minutes/" not in url
+
+    def test_1d_date_ordering(self):
+        # J. The URL preserves the Upstox V3 /to_date/from_date/ order.
+        rows = [_daily_row("2022-12-01")]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        p.fetch(_request(timeframe="1D"))
+        url = p._fake.calls[0][0]
+        assert url.endswith("/2023-01-01/2022-12-01")
+
+    def test_1d_range_clipping_strict_utc(self):
+        # K. No DAILY candle outside the requested [start, end] day
+        # labels is returned. A daily candle's canonical UTC timestamp
+        # is 18:30:00 UTC of the PRIOR day, so acceptance is by IST day
+        # label (documented provider rule).
+        rows = [
+            _daily_row("2022-11-30"),   # before start day label
+            _daily_row("2022-12-01"),   # first requested day
+            _daily_row("2022-12-15"),   # inside
+            _daily_row("2022-12-31"),   # last requested day
+            _daily_row("2023-01-01"),   # == end day label, allowed inclusive
+        ]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        labels = sorted(
+            (c.timestamp + timedelta(hours=5, minutes=30)).date()
+            for c in response.candles
+        )
+        assert labels == [
+            datetime(2022, 12, 1).date(),   # first requested day kept
+            datetime(2022, 12, 15).date(),
+            datetime(2022, 12, 31).date(),
+            datetime(2023, 1, 1).date(),    # inclusive end label kept
+        ]
+        # The day BEFORE the requested start label is never returned.
+        labels_before = [
+            (c.timestamp + timedelta(hours=5, minutes=30)).date()
+            for c in response.candles
+            if (c.timestamp + timedelta(hours=5, minutes=30)).date()
+            < datetime(2022, 12, 1).date()
+        ]
+        assert labels_before == []
+        # And the raw UTC timestamp of the first accepted candle is the
+        # exact +05:30->UTC normalization (policy verifiable).
+        first = response.candles[0]
+        assert first.timestamp == datetime(2022, 11, 30, 18, 30, tzinfo=UTC)
+
+    def test_1d_timezone_normalization(self):
+        # L. A daily candle timestamp 00:00:00+05:30 normalizes to
+        # 18:30:00 UTC of the prior day.
+        row = _daily_row("2022-12-01")
+        candles, filtered = (
+            UpstoxHistoricalDataProvider._parse_candles_filtered(
+                _v3_payload([row]), unit=UPSTOX_UNIT_DAYS,
+            )
+        )
+        assert filtered == 0
+        assert len(candles) == 1
+        assert candles[0].timestamp == datetime(2022, 11, 30, 18, 30,
+                                                tzinfo=UTC)
+        assert candles[0].timestamp.tzinfo is not None
+
+    def test_1d_reverse_chronological_normalized(self):
+        rows = [_daily_row("2022-12-01"), _daily_row("2022-12-02")]
+        # API returns them newest-first -> reverse here.
+        rows = list(reversed(rows))
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        ts = [c.timestamp for c in response.candles]
+        assert ts == sorted(ts)
+
+    def test_1d_monthly_chunking_kept(self):
+        # 1D keeps the same bounded-monthly-chunk semantics as 15m.
+        start = datetime(2022, 1, 1, tzinfo=UTC)
+        end = datetime(2023, 1, 1, tzinfo=UTC)
+        p = _make_provider({})
+        p.fetch(_request(timeframe="1D", start=start, end=end))
+        assert len(p._fake.calls) == 12
+        for url, _, _ in p._fake.calls:
+            assert "/days/1/" in url
+
+
+# ============================================================
+# 32. CHECKPOINT 3A — DAILY RESPONSE NORMALIZATION RULE
+# ============================================================
+
+
+class TestDailyResponseNormalization:
+    def test_real_v3_nested_data_candles_parsing(self):
+        # M. The real V3 shape (data.candles) parses for daily rows.
+        rows = [_daily_row("2022-12-01")]
+        candles, filtered = (
+            UpstoxHistoricalDataProvider._parse_candles_filtered(
+                {"status": "success", "data": {"candles": rows}},
+                unit=UPSTOX_UNIT_DAYS,
+            )
+        )
+        assert len(candles) == 1
+        assert filtered == 0
+
+    def test_midnight_daily_rows_kept(self):
+        rows = [_daily_row("2022-12-01"), _daily_row("2022-12-02")]
+        candles, filtered = (
+            UpstoxHistoricalDataProvider._parse_candles_filtered(
+                _v3_payload(rows), unit=UPSTOX_UNIT_DAYS,
+            )
+        )
+        assert len(candles) == 2
+        assert filtered == 0
+
+    def test_embedded_intraday_rows_filtered(self):
+        # N. A daily response that embeds intraday-related rows (09:15
+        # timestamps) keeps only the true daily bars.
+        rows = [
+            _daily_row("2022-12-01"),
+            _intraday_embedded_row("2022-12-01"),   # 09:15 same day
+            _daily_row("2022-12-02"),
+            _intraday_embedded_row("2022-12-02"),   # 09:15 same day
+            _intraday_embedded_row("2022-12-02"),   # 09:30? 09:15 reuse
+        ]
+        candles, filtered = (
+            UpstoxHistoricalDataProvider._parse_candles_filtered(
+                _v3_payload(rows), unit=UPSTOX_UNIT_DAYS,
+            )
+        )
+        assert len(candles) == 2
+        assert filtered == 3
+        # Canonical timestamps are the true daily bars only.
+        assert candles[0].timestamp == datetime(2022, 11, 30, 18, 30,
+                                                tzinfo=UTC)
+        assert candles[1].timestamp == datetime(2022, 12, 1, 18, 30,
+                                                tzinfo=UTC)
+
+    def test_intraday_responses_kept_unchanged(self):
+        # The daily filter NEVER applies to intraday responses.
+        rows = [_row(_ist("2022-12-01T09:15:00+05:30")),
+                _row(_ist("2022-12-01T09:30:00+05:30"))]
+        candles, filtered = (
+            UpstoxHistoricalDataProvider._parse_candles_filtered(
+                _v3_payload(rows), unit=UPSTOX_UNIT_MINUTES,
+            )
+        )
+        assert len(candles) == 2
+        assert filtered == 0
+
+    def test_legacy_parse_candles_no_filter(self):
+        # The backward-compatible entry point does NOT apply the daily
+        # filter (existing callers keep the old behavior).
+        rows = [_row(_ist("2022-12-01T09:15:00+05:30"))]
+        candles = UpstoxHistoricalDataProvider._parse_candles(
+            _v3_payload(rows),
+        )
+        assert len(candles) == 1
+
+    def test_fetch_daily_mixed_payload_filters_and_reports(self):
+        rows = [
+            _daily_row("2022-12-01"),
+            _intraday_embedded_row("2022-12-01"),
+            _daily_row("2022-12-02"),
+        ]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) == 2
+        assert "1 embedded intraday row(s) filtered" in response.reason
+
+    def test_malformed_daily_rows_rejected(self):
+        # O. A malformed row (bad shape) in a daily response raises ->
+        # chunk error -> honest ERROR (never silently stored).
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"):
+                _v3_payload([["2022-12-01T00:00:00+05:30", 1, 2]]),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.ERROR
+
+    def test_non_numeric_daily_row_rejected(self):
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"):
+                _v3_payload([_daily_row("2022-12-01", open_p="nan")]),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.ERROR
+
+    def test_naive_daily_timestamp_rejected(self):
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"):
+                _v3_payload([["2022-12-01T00:00:00", 1, 2, 1, 1.5, 100]]),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.ERROR
+
+    def test_duplicate_daily_timestamps_rejected(self):
+        # P. Duplicate daily timestamps (same day across two chunks) are
+        # deduped at the provider and the store merge is idempotent.
+        rows_a = [_daily_row("2022-12-01"), _daily_row("2022-12-02")]
+        rows_b = [_daily_row("2022-12-02"), _daily_row("2022-12-03")]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows_a),
+            _daily_url("2023-01-01", "2023-02-01"): _v3_payload(rows_b),
+        })
+        response = p.fetch(
+            _request(timeframe="1D",
+                     end=datetime(2023, 2, 1, tzinfo=UTC)),
+        )
+        # 3 unique daily timestamps (2022-12-01, 2022-12-02, 2022-12-03)
+        ts = [c.timestamp for c in response.candles]
+        assert len(ts) == len(set(ts)) == 3
+
+    def test_provider_ordering_invariance(self):
+        # Q. Feeding rows in different orders yields the same result.
+        rows = [_daily_row("2022-12-01"), _daily_row("2022-12-03"),
+                _daily_row("2022-12-02")]
+        p1 = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        p2 = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"):
+                _v3_payload(list(reversed(rows))),
+        })
+        r1 = p1.fetch(_request(timeframe="1D"))
+        r2 = p2.fetch(_request(timeframe="1D"))
+        assert r1.status is ProviderResponseStatus.OK
+        assert r2.status is ProviderResponseStatus.OK
+        assert [c.timestamp for c in r1.candles] == \
+            [c.timestamp for c in r2.candles]
+
+    def test_no_future_daily_candles(self):
+        # R. Rows strictly beyond the requested end day label are never
+        # returned.
+        rows = [_daily_row("2022-12-01"), _daily_row("2023-01-02")]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request(timeframe="1D"))
+        assert response.status is ProviderResponseStatus.OK
+        labels = [
+            (c.timestamp + timedelta(hours=5, minutes=30)).date()
+            for c in response.candles
+        ]
+        assert labels == [datetime(2022, 12, 1).date()]
+
+    def test_idempotent_daily_persistence(self, tmp_path):
+        # S. Ingestion of the same daily data twice adds no duplicates.
+        rows = [_daily_row("2022-12-01"), _daily_row("2022-12-02")]
+        p = _make_provider({
+            _daily_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        store = HistoricalDataStore(tmp_path)
+        svc = HistoricalMarketDataService(provider=p, store=store)
+        first = svc.ingest(_request(timeframe="1D"), reference_now=_END)
+        assert first.fetch.status is HistoricalIngestionStatus.AVAILABLE
+        assert first.store.records_added == 2
+        second = svc.ingest(_request(timeframe="1D"), reference_now=_END)
+        assert second.store.records_added == 0
+        assert second.store.total_candles == 2
+        assert len(store.load_candles("RELIANCE", "1D")) == 2

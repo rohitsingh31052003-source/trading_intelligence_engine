@@ -27,11 +27,15 @@ PROVIDER STRATEGY (per Product Phase 6A §3/§4):
 * :class:`UpstoxHistoricalDataProvider` — OPTIONAL real-HTTP
   historical provider for the Upstox V3 Historical Candle API. Only
   available when the ``UPSTOX_ANALYTICS_TOKEN`` environment variable is
-  set. Intraday windows are split into bounded monthly calendar chunks;
+  set. Windows (intraday ``15m`` and daily ``1D`` via the verified
+  ``days/1`` endpoint) are split into bounded monthly calendar chunks;
   timestamps are normalized to UTC before the canonical validation
-  layer. Instrument keys are resolved via an explicit verified mapping
-  (unknown instruments fail clearly). Yahoo symbols are NOT valid
-  Upstox instrument keys.
+  layer. Daily responses are normalized by a deterministic rule
+  (embedded intraday rows filtered before canonical candle
+  construction). Instrument keys are resolved via an explicit verified
+  mapping for the confirmed research universe (NIFTY + RELIANCE / TCS /
+  HDFCBANK / ICICIBANK); unknown instruments fail clearly. Yahoo
+  symbols are NOT valid Upstox instrument keys.
 
 The provider must be replaceable without changing the research layer —
 the service depends only on the protocol.
@@ -559,6 +563,11 @@ UPSTOX_HISTORICAL_URL = (
 #: Upstox candle unit for intraday / minute intervals.
 UPSTOX_UNIT_MINUTES = "minutes"
 
+#: Upstox candle unit for daily intervals. The verified V3 daily
+#: endpoint is ``/historical-candle/{instrument_key}/days/1/...`` (the
+#: correct spelling is ``days`` / ``1`` — NOT ``day`` / ``1``).
+UPSTOX_UNIT_DAYS = "days"
+
 #: Upstox candles are timestamped in the NSE/IST local timezone
 #: (UTC+05:30) — e.g. ``2022-01-03T09:15:00+05:30``. Normalized to UTC
 #: before the canonical OHLCVCandle objects reach validation.
@@ -594,11 +603,21 @@ def _default_upstox_instrument_key_map() -> dict[str, str]:
     guessed or fabricated.
     """
 
-    #: Upstox instrument keys verified against the real API. Only these
-    #: canonical instruments are mapped; everything else is unknown and
-    #: fails clearly instead of silently requesting an invalid key.
+    #: Upstox instrument keys verified against the real API / the
+    #: established controlled Upstox verification. Only these canonical
+    #: instruments are mapped; everything else is unknown and fails
+    #: clearly instead of silently requesting an invalid key.
+    #
+    #: Equities use the NSE_EQ segment keyed by ISIN; the NIFTY 50 index
+    #: uses the NSE_INDEX segment keyed by the exact Upstox name (the
+    #: key contains a pipe separator and a space — it is percent-encoded
+    #: at URL construction time, see ``fetch``).
     VERIFIED_KEY_MAP: dict[str, str] = {
         "RELIANCE": "NSE_EQ|INE002A01018",
+        "TCS": "NSE_EQ|INE467B01029",
+        "HDFCBANK": "NSE_EQ|INE040A01034",
+        "ICICIBANK": "NSE_EQ|INE090A01021",
+        "NIFTY": "NSE_INDEX|Nifty 50",
     }
     return dict(VERIFIED_KEY_MAP)
 
@@ -719,6 +738,7 @@ class UpstoxHistoricalDataProvider:
     #: provider has actually been implemented for are listed.
     _INTERVALS: ClassVar[dict[str, tuple[str, str]]] = {
         "15m": (UPSTOX_UNIT_MINUTES, "15"),
+        "1D": (UPSTOX_UNIT_DAYS, "1"),
     }
 
     #: Default HTTP timeout (seconds). Explicit, finite, configurable.
@@ -853,7 +873,7 @@ class UpstoxHistoricalDataProvider:
                 status=ProviderResponseStatus.UNSUPPORTED,
                 reason=(
                     f"timeframe {request.timeframe!r} not supported by "
-                    "Upstox (supported: 15m)."
+                    "Upstox (supported: 15m, 1D)."
                 ),
             )
         try:
@@ -869,6 +889,7 @@ class UpstoxHistoricalDataProvider:
         merged: dict[str, OHLCVCandle] = {}
         errors: list[str] = []
         called: list[str] = []
+        daily_filtered_rows = 0
         for chunk_start, chunk_end in _upstox_monthly_chunks(
             request.start, request.end,
         ):
@@ -888,18 +909,35 @@ class UpstoxHistoricalDataProvider:
             )
             called.append(url)
             try:
-                candles = self._fetch_one(url, token)
+                candles, filtered = self._fetch_one(url, token, unit=unit)
             except Exception as exc:  # noqa: BLE001 - network/parse failures
                 errors.append(f"{from_date}: {exc}")
                 continue
+            if unit == UPSTOX_UNIT_DAYS:
+                daily_filtered_rows += filtered
             for candle in candles:
-                # RANGE SEMANTICS: Upstox ``to_date`` is an INCLUSIVE
-                # day label and returns the entire trading day, so rows
-                # beyond the requested ``end`` (and before ``start``)
-                # are dropped here — the returned data never contains a
-                # candle outside the requested window.
-                if not (request.start <= candle.timestamp <= request.end):
-                    continue
+                if unit == UPSTOX_UNIT_DAYS:
+                    # RANGE SEMANTICS (DAILY): Upstox day labels are
+                    # inclusive exchange-day labels derived from the
+                    # requested ``[start.date(), end.date()]``. A daily
+                    # candle is timestamped at 00:00:00+05:30 (IST), which
+                    # normalizes to 18:30:00 UTC the PRIOR day — so a
+                    # strict UTC comparison against the UTC ``[start,
+                    # end]`` window would incorrectly drop the first
+                    # requested trading day. The deterministic provider
+                    # rule is therefore to compare the candle's IST
+                    # trading-day label against the requested day labels
+                    # (exactly what the API was asked to produce).
+                    ist_label = (candle.timestamp + UPSTOX_TIMESTAMP_TZ).date()
+                    if not (request.start.date() <= ist_label
+                            <= request.end.date()):
+                        continue
+                else:
+                    # RANGE SEMANTICS (INTRADAY): the NSE session
+                    # candles fall within the same UTC day, so the
+                    # strict UTC window is used unchanged.
+                    if not (request.start <= candle.timestamp <= request.end):
+                        continue
                 merged[candle.timestamp.isoformat()] = candle
 
         if not merged:
@@ -918,13 +956,16 @@ class UpstoxHistoricalDataProvider:
         # Reverse-chronological raw responses are normalized BEFORE the
         # canonical validation layer (chronological, deterministic).
         candles = sorted(merged.values(), key=lambda c: c.timestamp)
-        reason = (
-            f"{len(called)} monthly chunk(s) requested; "
-            f"{len(errors)} chunk error(s); merged and normalized to "
-            "chronological order."
-            if errors
-            else f"{len(called)} monthly chunk(s) requested."
-        )
+        parts = [f"{len(called)} monthly chunk(s) requested"]
+        if daily_filtered_rows:
+            parts.append(
+                f"{daily_filtered_rows} embedded intraday row(s) filtered "
+                "from daily response(s)",
+            )
+        if errors:
+            parts.append(f"{len(errors)} chunk error(s)")
+        parts.append("merged and normalized to chronological order")
+        reason = "; ".join(parts)
         return HistoricalProviderResponse(
             provider_name=self.provider_name,
             status=ProviderResponseStatus.OK,
@@ -936,13 +977,26 @@ class UpstoxHistoricalDataProvider:
     # HTTP LAYER (injectable for tests; no token leakage)
     # ------------------------------------------------------------
 
-    def _fetch_one(self, url: str, token: str) -> list[OHLCVCandle]:
+    def _fetch_one(
+        self,
+        url: str,
+        token: str,
+        *,
+        unit: str | None = None,
+    ) -> tuple[list[OHLCVCandle], int]:
         """One GET request against the Upstox V3 historical endpoint.
 
-        Returns canonical ``OHLCVCandle`` objects parsed from the API
-        response (normalized to UTC, chronological NOT required here —
-        the caller sorts). Throws on network errors and malformed /
+        Returns ``(candles, filtered_count)`` where ``candles`` are the
+        canonical ``OHLCVCandle`` objects parsed from the API response
+        (normalized to UTC, chronological NOT required here — the caller
+        sorts) and ``filtered_count`` is the number of rows dropped by
+        the provider-specific daily normalization rule (0 for intraday
+        responses). Throws on network errors and malformed /
         unsuccessful responses so the caller can report them honestly.
+
+        When ``unit`` is :data:`UPSTOX_UNIT_DAYS` the daily normalization
+        rule is applied (embedded intraday rows are filtered BEFORE
+        canonical candle construction — see ``_parse_candles``).
 
         The ``urlopen`` injection (used by deterministic tests) receives
         the actual :class:`urllib.request.Request` object and the token,
@@ -975,7 +1029,7 @@ class UpstoxHistoricalDataProvider:
             text = self._decode_body(raw, encoding)
 
         payload = json.loads(text)
-        return self._parse_candles(payload)
+        return self._parse_candles_filtered(payload, unit=unit)
 
     @staticmethod
     def _decode_body(raw: bytes | str | None,
@@ -1016,6 +1070,32 @@ class UpstoxHistoricalDataProvider:
         """
         Validate and convert one Upstox response payload to candles.
 
+        Backward-compatible entry point: returns the list of canonical
+        ``OHLCVCandle`` objects with NO daily row filtering (the
+        behaviour the provider shipped before daily support). New code
+        that must apply the provider-specific daily normalization rule
+        calls :meth:`_parse_candles_filtered` instead.
+        """
+
+        candles, _ = UpstoxHistoricalDataProvider._parse_candles_filtered(
+            payload,
+            unit=None,
+        )
+        return candles
+
+    @staticmethod
+    def _parse_candles_filtered(
+        payload: object,
+        unit: str | None = None,
+    ) -> tuple[list[OHLCVCandle], int]:
+        """
+        Validate and convert one Upstox response payload to candles.
+
+        Returns ``(candles, filtered_count)`` where ``candles`` is the
+        list of canonical ``OHLCVCandle`` objects and ``filtered_count``
+        counts rows dropped by the provider-specific daily normalization
+        rule (always 0 for intraday / ``unit is None`` responses).
+
         The response is validated before any ``OHLCVCandle`` is
         constructed:
 
@@ -1034,6 +1114,23 @@ class UpstoxHistoricalDataProvider:
 
         Invalid rows raise ``ValueError`` so the caller reports the
         chunk error honestly (never a silent partial success).
+
+        DAILY RESPONSE NORMALIZATION RULE (unit == ``UPSTOX_UNIT_DAYS``;
+        ``days`` / ``1`` responses): a genuine Upstox daily candle is
+        timestamped at 00:00:00+05:30 (IST) — the exchange-day start
+        label — per the official V3 daily-response examples. Some daily
+        responses may nevertheless embed intraday-related rows (e.g.
+        09:15:00+05:30 intraday timestamps). Those rows are NOT valid
+        daily candles: they share the trading day but carry a
+        non-midnight IST time-of-day and would be stored as duplicates /
+        malformed daily bars. The deterministic provider rule is
+        therefore: for DAILY responses only, keep a row ONLY when its
+        IST-local time-of-day is exactly midnight (00:00:00, the daily
+        bar label) and FILTER (skip) every other row BEFORE canonical
+        candle construction. Filtered rows are counted and reported in
+        the response reason — never silently repaired, never fabricated
+        into daily candles. A daily response consisting entirely of
+        embedded intraday rows yields an honest empty chunk.
         """
 
         if not isinstance(payload, dict):
@@ -1055,6 +1152,7 @@ class UpstoxHistoricalDataProvider:
                 "Upstox response is missing a 'data.candles' list.",
             )
         candles: list[OHLCVCandle] = []
+        filtered_count = 0
         for row_index, row in enumerate(raw):
             if not isinstance(row, (list, tuple)) or len(row) < 6:
                 raise ValueError(
@@ -1068,6 +1166,15 @@ class UpstoxHistoricalDataProvider:
                     f"Upstox candle row {row_index} timestamp {row[0]!r} "
                     "is not timezone-aware / parseable.",
                 )
+            if unit == UPSTOX_UNIT_DAYS:
+                # DAILY RESPONSE NORMALIZATION RULE: keep a row only
+                # when its IST-local time-of-day is midnight (the daily
+                # bar label); filter embedded intraday rows explicitly.
+                ist_local = ts + UPSTOX_TIMESTAMP_TZ
+                if not (ist_local.hour == 0 and ist_local.minute == 0
+                        and ist_local.second == 0):
+                    filtered_count += 1
+                    continue
             values = []
             for name, value in zip(
                 ("open", "high", "low", "close", "volume"), row[1:6],
@@ -1096,12 +1203,13 @@ class UpstoxHistoricalDataProvider:
                     volume=volume,
                 ),
             )
-        return candles
+        return candles, filtered_count
 
 
 __all__ = [
     "UPSTOX_ACCEPT_ENCODING",
     "UPSTOX_TOKEN_ENV",
+    "UPSTOX_UNIT_DAYS",
     "UPSTOX_USER_AGENT",
     "DeterministicLocalHistoricalProvider",
     "HistoricalMarketDataProvider",

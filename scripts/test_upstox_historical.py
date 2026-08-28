@@ -3,10 +3,13 @@
 Deterministic UPSTOX HISTORICAL PROVIDER demo.
 
 Visibly proves the Upstox historical provider works against a
-FAKE/injected HTTP backend: provider contract, availability, 15m
-support, instrument-key resolution, URL + Authorization header
-construction (without leaking the token), reverse-chronological
-normalization, monthly chunking, multi-chunk merging, OHLCV conversion,
+FAKE/injected HTTP backend: provider contract, availability, 15m + 1D
+support, the verified research-universe instrument-key mapping (RELIANCE
+/ TCS / HDFCBANK / ICICIBANK / NIFTY), NIFTY key percent-encoding, URL
++ Authorization header construction (without leaking the token),
+reverse-chronological normalization, monthly chunking, multi-chunk
+merging, the daily response normalization rule (embedded intraday rows
+filtered before canonical candle construction), OHLCV conversion,
 +05:30 -> UTC timestamp normalization, error handling, service + store
 integration, idempotent re-ingestion, and NO regression to the Yahoo /
 deterministic providers.
@@ -129,24 +132,52 @@ def main() -> int:
         ),
     )
 
-    # 2. Timeframe support.
+    # 2. Timeframe support (15m + 1D).
     report(
-        "3. supports RELIANCE/15m, not 1D",
+        "3. supports RELIANCE/15m and RELIANCE/1D",
         p.supports("RELIANCE", "15m") is True
-        and p.supports("RELIANCE", "1D") is False,
+        and p.supports("RELIANCE", "1D") is True
+        and p.supports("RELIANCE", "30m") is False
+        and p.supports("RELIANCE", "1h") is False,
     )
 
-    # 3. Instrument-key resolution.
+    # 3. Verified research-universe instrument-key resolution.
     report(
-        "4. RELIANCE -> NSE_EQ|INE002A01018",
+        "4. RELIANCE -> NSE_EQ|INE002A01018 (unchanged)",
         p.resolve_instrument_key("RELIANCE") == "NSE_EQ|INE002A01018",
     )
+    report(
+        "5. TCS -> NSE_EQ|INE467B01029 (additional equity)",
+        p.resolve_instrument_key("TCS") == "NSE_EQ|INE467B01029",
+    )
+    report(
+        "6. HDFCBANK -> NSE_EQ|INE040A01034",
+        p.resolve_instrument_key("HDFCBANK") == "NSE_EQ|INE040A01034",
+    )
+    report(
+        "7. ICICIBANK -> NSE_EQ|INE090A01021",
+        p.resolve_instrument_key("ICICIBANK") == "NSE_EQ|INE090A01021",
+    )
+    report(
+        "8. NIFTY -> NSE_INDEX|Nifty 50 (index key with pipe + space)",
+        p.resolve_instrument_key("NIFTY") == "NSE_INDEX|Nifty 50",
+    )
     try:
-        p.resolve_instrument_key("NIFTY")
+        p.resolve_instrument_key("NOTANINSTRUMENT")
         ok_unknown = False
     except KeyError:
         ok_unknown = True
-    report("5. unknown instrument fails clearly (KeyError)", ok_unknown)
+    report("9. unknown instrument fails clearly (KeyError)", ok_unknown)
+
+    # 3b. NIFTY key percent-encoding (pipe preserved, space encoded).
+    import urllib.parse as _urlparse
+
+    encoded_key = _urlparse.quote("NSE_INDEX|Nifty 50", safe="|")
+    report(
+        "10. NIFTY key percent-encoded (pipe kept, space -> %20)",
+        encoded_key == "NSE_INDEX|Nifty%2050"
+        and _urlparse.unquote(encoded_key) == "NSE_INDEX|Nifty 50",
+    )
 
     # 4. Fake-backed fetch: URL/headers, reverse-order normalization,
     #    +05:30 -> UTC, OHLCV parsing.
@@ -155,7 +186,7 @@ def main() -> int:
     p = UpstoxHistoricalDataProvider(token=_TOKEN, urlopen=fake)
     response = p.fetch(_request())
     report(
-        "6. fetch returns OK with 5 candles (chronological)",
+        "11. fetch returns OK with 5 candles (chronological)",
         response.status is ProviderResponseStatus.OK
         and len(response.candles) == 5
         and [c.timestamp for c in response.candles]
@@ -163,17 +194,17 @@ def main() -> int:
     )
     url, headers, _token = fake.calls[0]
     report(
-        "7. exact Upstox URL constructed",
+        "12. exact Upstox URL constructed",
         url == _chunk_url("2022-12-01", "2023-01-01"),
     )
     report(
-        "8. Bearer Authorization header (token never logged)",
+        "13. Bearer Authorization header (token never logged)",
         headers["Authorization"] == f"Bearer {_TOKEN}"
         and _TOKEN not in url,
     )
     c0 = response.candles[0]
     report(
-        "9. +05:30 timestamp normalized to UTC, OHLCV converted",
+        "14. +05:30 timestamp normalized to UTC, OHLCV converted",
         c0.timestamp == datetime(2022, 12, 1, 3, 45, tzinfo=UTC)
         and c0.open == 2400.0 and c0.high == 2410.0
         and c0.low == 2390.0 and c0.close == 2405.0 and c0.volume == 100000.0,
@@ -183,7 +214,7 @@ def main() -> int:
     chunks = _upstox_monthly_chunks(
         datetime(2022, 1, 1, tzinfo=UTC), datetime(2023, 1, 1, tzinfo=UTC),
     )
-    report("10. a 12-month range splits into 12 monthly chunks", len(chunks) == 12)
+    report("15. a 12-month range splits into 12 monthly chunks", len(chunks) == 12)
     handlers = {
         _chunk_url("2022-12-01", "2023-01-01"):
             _payload(_reliance_rows("2022-12-01", 3)),
@@ -194,7 +225,7 @@ def main() -> int:
     p2 = UpstoxHistoricalDataProvider(token=_TOKEN, urlopen=fake2)
     merged = p2.fetch(_request(end=datetime(2023, 2, 1, tzinfo=UTC)))
     report(
-        "11. multiple monthly responses combined chronologically",
+        "16. multiple monthly responses combined chronologically",
         merged.status is ProviderResponseStatus.OK
         and len(merged.candles) == 5
         and [c.timestamp for c in merged.candles]
@@ -209,11 +240,11 @@ def main() -> int:
     p3 = UpstoxHistoricalDataProvider(token=_TOKEN, urlopen=fake3)
     failed = p3.fetch(_request())
     report(
-        "12. failed month -> honest ERROR (never fabricated data)",
+        "17. failed month -> honest ERROR (never fabricated data)",
         failed.status is ProviderResponseStatus.ERROR,
     )
 
-    # 7. Service + store integration, idempotency.
+    # 7. Service + store integration, idempotency (15m).
     with TemporaryDirectory() as tmp:
         store = HistoricalDataStore(tmp)
         fake4 = _FakeUrlopen({
@@ -224,7 +255,7 @@ def main() -> int:
         svc = HistoricalMarketDataService(provider=p4, store=store)
         result = svc.ingest(_request(), reference_now=_END)
         report(
-            "13. service + canonical store persist Upstox data",
+            "18. service + canonical store persist Upstox 15m data",
             result.fetch.status is HistoricalIngestionStatus.AVAILABLE
             and result.store.total_candles == 4
             and result.store.reload_verified is True,
@@ -232,16 +263,81 @@ def main() -> int:
         )
         second = svc.ingest(_request(), reference_now=_END)
         report(
-            "14. idempotent re-ingestion (no duplicates)",
+            "19. idempotent re-ingestion (no duplicates)",
             second.store.records_added == 0
             and second.store.total_candles == 4,
         )
         loaded = svc.load_historical("RELIANCE", "15m")
         report(
-            "15. candles stored under the canonical structure",
+            "20. candles stored under the canonical structure",
             loaded.count == 4
             and (Path(tmp) / "RELIANCE" / "15m" / "candles.json").exists()
             and all(c.timestamp.tzinfo is not None for c in loaded.candles),
+        )
+
+    # 7b. DAILY (1D) support: /days/1 URL, daily normalization rule,
+    #     timezone normalization, service + store integration.
+    def _daily_row(date_iso: str, open_p=18000.0) -> list:
+        return [f"{date_iso}T00:00:00+05:30", open_p, open_p + 100.0,
+                open_p - 100.0, open_p + 50.0, 1_000_000.0, 0]
+
+    def _daily_url(from_date: str, to_date: str) -> str:
+        return (
+            "https://api.upstox.com/v3/historical-candle/"
+            f"NSE_EQ|INE002A01018/days/1/{to_date}/{from_date}"
+        )
+
+    daily_rows = [
+        _daily_row("2022-12-01"),
+        _daily_row("2022-12-02"),
+        # An embedded intraday-related row that must be filtered.
+        ["2022-12-02T09:15:00+05:30", 18010.0, 18020.0, 17990.0,
+         18005.0, 50000.0, 0],
+    ]
+    fake5 = _FakeUrlopen({
+        _daily_url("2022-12-01", "2023-01-01"): _payload(daily_rows),
+    })
+    p5 = UpstoxHistoricalDataProvider(token=_TOKEN, urlopen=fake5)
+    daily = p5.fetch(_request(timeframe="1D"))
+    report(
+        "21. 1D fetch uses /days/1 and keeps only true daily bars",
+        daily.status is ProviderResponseStatus.OK
+        and len(daily.candles) == 2
+        and "/days/1/" in fake5.calls[0][0]
+        and "1 embedded intraday row(s) filtered" in daily.reason,
+    )
+    d0 = daily.candles[0]
+    report(
+        "22. daily 00:00:00+05:30 normalized to UTC (prior day 18:30Z)",
+        d0.timestamp == datetime(2022, 11, 30, 18, 30, tzinfo=UTC)
+        and d0.timestamp.tzinfo is not None,
+    )
+    with TemporaryDirectory() as tmp2:
+        store2 = HistoricalDataStore(tmp2)
+        svc2 = HistoricalMarketDataService(
+            provider=UpstoxHistoricalDataProvider(
+                token=_TOKEN,
+                urlopen=_FakeUrlopen({
+                    _daily_url("2022-12-01", "2023-01-01"):
+                        _payload([_daily_row("2022-12-01"),
+                                  _daily_row("2022-12-02")]),
+                }),
+            ),
+            store=store2,
+        )
+        dres = svc2.ingest(_request(timeframe="1D"), reference_now=_END)
+        report(
+            "23. service + canonical store persist Upstox 1D data",
+            dres.fetch.status is HistoricalIngestionStatus.AVAILABLE
+            and dres.store.total_candles == 2
+            and (Path(tmp2) / "RELIANCE" / "1D" / "candles.json").exists(),
+            dres.store.path,
+        )
+        dres2 = svc2.ingest(_request(timeframe="1D"), reference_now=_END)
+        report(
+            "24. idempotent 1D re-ingestion (no duplicates)",
+            dres2.store.records_added == 0
+            and dres2.store.total_candles == 2,
         )
 
     # 8. No regression to Yahoo / deterministic providers.
@@ -253,7 +349,7 @@ def main() -> int:
     y = YahooHistoricalDataProvider()
     d = DeterministicLocalHistoricalProvider()
     report(
-        "16. Yahoo / deterministic providers unchanged",
+        "25. Yahoo / deterministic providers unchanged",
         y.provider_name == "yahoo-historical"
         and y.resolve_symbol("RELIANCE") == "RELIANCE.NS"
         and d.provider_name == "local-deterministic"
@@ -271,7 +367,7 @@ def main() -> int:
         trending_dataset(),
     )
     report(
-        "17. existing pipeline baseline unchanged (4 signals / 3 trades)",
+        "26. existing pipeline baseline unchanged (4 signals / 3 trades)",
         pipeline_result.signals_generated == 4
         and pipeline_result.performance.completed_trades == 3,
     )
