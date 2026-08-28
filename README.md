@@ -411,11 +411,22 @@ python scripts/ingest_historical_data.py \
   protocol.
 - **Providers** — `local-deterministic` (default; clearly-labelled synthetic
   series derived from a hash of instrument+timeframe; no network / no API key),
-  `in-memory-import` (caller-supplied records for tests / imports), and an
+  `in-memory-import` (caller-supplied records for tests / imports), an
   optional `yahoo-historical` adapter (reuses the existing
   `YahooFinanceProvider.get_history`; graceful when yfinance/pandas are
-  unavailable). Yahoo remains the LIVE/near-live provider; the historical
-  provider is a separate, additive path.
+  unavailable), and an optional `upstox-historical` adapter (real-HTTP Upstox
+  V3 Historical Candle API; requires the `UPSTOX_ANALYTICS_TOKEN` env var;
+  15m intraday only; intraday ranges are split into bounded monthly calendar
+  chunks; timestamps normalized to UTC). Yahoo remains the LIVE/near-live
+  provider; Upstox is an additive historical provider. Enable an Upstox
+  one-month live check with:
+  ```bash
+  python scripts/verify_upstox_live.py   # RELIANCE 15m 2022-12-01 -> 2023-01-01
+  ```
+  See `docs/upstox_historical_provider` for instrument-key resolution,
+  monthly chunking, authentication safety and limitations. Ingestion remains
+  an explicit operator action — Upstox does NOT automatically download data
+  merely because the provider exists.
 - **Canonical candle model** — reuses the existing `OHLCVCandle`; timestamps are
   normalized to UTC and naive timestamps are rejected (never silently accepted).
 - **Typed request model** — `HistoricalDataRequest` (instrument / timeframe /

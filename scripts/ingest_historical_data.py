@@ -18,8 +18,10 @@ Usage::
 
 Provider selection (``--provider``): ``local-deterministic`` (default,
 no network / no API key), ``in-memory-import``, ``yahoo-historical``
-(optional; only when yfinance/pandas are installed). The provider is
-replaceable without changing the research layer.
+(optional; only when yfinance/pandas are installed), ``upstox-historical``
+(optional real-HTTP provider requiring the ``UPSTOX_ANALYTICS_TOKEN``
+environment variable; 15m intraday only, monthly-chunked). The provider
+is replaceable without changing the research layer.
 
 Exit codes: 0 on AVAILABLE / PARTIAL ingestion (per-instrument
 validation failures are reported honestly, never treated as CLI
@@ -46,6 +48,7 @@ from datetime import UTC, datetime  # noqa: E402
 from engine.data.historical_provider import (  # noqa: E402
     DeterministicLocalHistoricalProvider,
     InMemoryHistoricalProvider,
+    UpstoxHistoricalDataProvider,
     YahooHistoricalDataProvider,
 )
 from engine.data.historical_service import (  # noqa: E402
@@ -70,6 +73,7 @@ _PROVIDERS = {
     DEFAULT_PROVIDER: DeterministicLocalHistoricalProvider,
     "in-memory-import": InMemoryHistoricalProvider,
     "yahoo-historical": YahooHistoricalDataProvider,
+    "upstox-historical": UpstoxHistoricalDataProvider,
 }
 
 
@@ -237,7 +241,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         default=DEFAULT_PROVIDER,
-        help="local-deterministic (default) / in-memory-import / yahoo-historical",
+        help=(
+            "local-deterministic (default) / in-memory-import / "
+            "yahoo-historical / upstox-historical"
+        ),
     )
     parser.add_argument(
         "--data-dir",

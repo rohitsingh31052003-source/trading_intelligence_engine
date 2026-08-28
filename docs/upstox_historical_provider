@@ -1,0 +1,184 @@
+# Upstox Historical OHLCV Provider
+
+## What this is
+
+An additive **historical** OHLCV provider for the existing Product Phase 6B
+historical-data ingestion layer:
+
+```
+engine/data/historical_provider.py  ->  UpstoxHistoricalDataProvider
+provider name                       ->  "upstox-historical"
+API                                 ->  Upstox V3 Historical Candle API
+```
+
+It implements the **same provider contract** as `YahooHistoricalDataProvider`
+(`provider_name` / `is_available` / `supports` / `fetch` →
+`HistoricalProviderResponse`) and is available through the **same** service and
+store pipeline (`HistoricalMarketDataService` → `HistoricalDataStore`). No
+second storage format, no `data/upstox/` directory — a stored Upstox dataset
+is indistinguishable from other valid historical OHLCV data except for the
+`provider` field in its provenance record.
+
+This is a **provider-integration task only**:
+
+* No trading intelligence, decision, setup-detection, geometry, trade-planning,
+  paper-trading, live-trading, Phase 6C/6D/6E/6F behavior is changed.
+* The authoritative decision architecture is untouched.
+
+## Environment variable
+
+```bash
+export UPSTOX_ANALYTICS_TOKEN="<your Upstox Analytics API token>"
+```
+
+* The provider is available **only** when this variable is set.
+* The token is sent **only** in the `Authorization: Bearer <token>` header.
+* The token is NEVER hard-coded, NEVER printed, NEVER logged, NEVER committed,
+  NEVER written to tests/fixtures/docs/git-tracked files.
+
+Missing token → `is_available() == False` and `fetch()` returns an honest
+`ERROR` status response.
+
+## Instrument-key resolution
+
+Upstox requires **instrument keys** (e.g. `NSE_EQ|INE002A01018`), NOT Yahoo
+symbols (`RELIANCE.NS` is not a valid Upstox key). Resolution is isolated to
+the provider layer via an explicit mapping:
+
+```python
+"RELIANCE" -> "NSE_EQ|INE002A01018"   # verified against the real API
+```
+
+Only keys verified against the real API are mapped. An unknown instrument
+raises `KeyError` (via `resolve_instrument_key`) and `fetch` reports
+`UNSUPPORTED` — it fails clearly rather than silently requesting an invalid
+Upstox key. The map is derived from the existing canonical universe
+(`engine.config.universe`); **no second universe** is introduced. To add an
+instrument key, extend `_default_upstox_instrument_key_map()` or pass
+`instrument_key_map=` to the constructor.
+
+## Monthly chunking
+
+A requested intraday window is split into **bounded monthly calendar chunks**
+and every chunk is requested separately — a multi-year intraday range is never
+sent as one giant request. Example: `2022-01-01 -> 2023-01-01` becomes
+12 monthly requests (`2022-01-01 -> 2022-02-01`, ..., `2022-12-01 ->
+2023-01-01`). Chunk boundaries follow calendar months; no assumption that every
+month has the same number of candles; missing trading days are never
+fabricated; weekends / market holidays are not treated as errors.
+
+Chunk responses are merged (dedupe by timestamp) and normalized to
+chronological order BEFORE the canonical validation layer.
+
+## Supported timeframes
+
+| Timeframe | Upstox unit / interval |
+|-----------|------------------------|
+| `15m`     | `minutes` / `15`       |
+
+Only native Upstox intervals are used — no resampling / fabrication. Other
+timeframes report `supports() -> False` and `fetch() -> UNSUPPORTED`.
+`15m` / `15M` alias to the same canonical label via the existing timeframe
+utilities.
+
+## Request details
+
+```
+GET https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
+Accept: application/json
+Authorization: Bearer <UPSTOX_ANALYTICS_TOKEN>
+```
+
+* Finite default HTTP timeout (`30s`).
+* No infinite retries — network/API failures are converted into the existing
+  provider response vocabulary (`ERROR` / `EMPTY`).
+* `Accept-Encoding: gzip, deflate` is set (the Upstox gateway rejects
+  urllib's default `identity`).
+* The response is validated before constructing `OHLCVCandle` objects:
+  `status == "success"`, `candles` list present, row shape valid
+  (`[timestamp, open, high, low, close, volume, open_interest]`),
+  numeric OHLCV finite, timestamps parseable. `open_interest` is ignored —
+  the canonical OHLCV contract has no field for it.
+
+## Timestamp normalization
+
+Upstox returns timezone-aware `+05:30` timestamps
+(`2022-01-03T09:15:00+05:30`). They are normalized to UTC
+(`2022-01-03T03:45:00+00:00`) before the canonical validation layer. Naive
+timestamps are still rejected by the existing validator (the normalization
+never weakens the canonical clock).
+
+## Date semantics
+
+The requested `[start, end]` window from `HistoricalDataRequest` is respected
+exactly: the number of monthly chunks is bounded by the months intersecting the
+range, every chunk's `to_date` is capped at the requested `end`, and returned
+candles outside `[start, end]` are dropped. No look-ahead behavior; no
+silently extended range; `reference_now` future-rejection stays at the service
+layer.
+
+## Usage
+
+```bash
+# One real Upstox monthly ingestion:
+python scripts/ingest_historical_data.py \
+    --instrument RELIANCE \
+    --timeframe 15m \
+    --start 2022-12-01 \
+    --end 2023-01-01 \
+    --provider upstox-historical
+```
+
+The CLI prints provider / requested range / records received / accepted /
+rejected / validation status / storage info / reload verification using the
+existing reporting structure.
+
+## Authentication safety
+
+* Token read lazily from `UPSTOX_ANALYTICS_TOKEN` (constructor override exists
+  only for tests).
+* Token appears ONLY in the `Authorization` header.
+* Tests assert the token never appears in the URL or in response reasons.
+
+## Live verification procedure
+
+```bash
+export UPSTOX_ANALYTICS_TOKEN="<token>"
+python scripts/verify_upstox_live.py          # RELIANCE 15m 2022-12-01 -> 2023-01-01
+python scripts/verify_upstox_live.py --data-dir /tmp/hist   # also makes a real ingestion
+```
+
+Demonstrates HTTP 200, non-zero candles, valid timestamps, valid OHLCV,
+correct chronological normalization. Optional `--instrument` / `--timeframe` /
+`--start` / `--end` flags are accepted. Exits 0 on success.
+
+The normal test suite and the deterministic demo (`scripts/test_upstox_historical.py`)
+never touch the network and require no token.
+
+## Distinction between Yahoo and Upstox
+
+| | Yahoo (`yahoo-historical`) | Upstox (`upstox-historical`) |
+|---|---|---|
+| Instrument identity | Yahoo symbols (`RELIANCE.NS`, `^NSEI`) | Upstox instrument keys (`NSE_EQ|INE002A01018`) |
+| Availability | optional py packages (`yfinance`/`pandas`) | `UPSTOX_ANALYTICS_TOKEN` env var |
+| Timeframes | `1m`…`1D` | `15m` only (first scope) |
+| Intraday range | retention-window clipped + windowed fetch | monthly calendar chunks |
+| Timestamps | aware/naive normalized to UTC | aware `+05:30` normalized to UTC |
+
+Yahoo remains the live/near-live provider for the dashboard; Upstox is an
+additive **historical** provider. They share the same service/store contract.
+
+## Limitations
+
+* `15m` is the only implemented timeframe (first scope).
+* Only instrument keys verified against the real API are mapped (currently
+  `RELIANCE`); other instruments are honestly unavailable.
+* Not a full historical corpus downloader — the provider does NOT download the
+  whole universe, does NOT download years of data on startup, and there is NO
+  scheduler for historical ingestion. Upstox does NOT automatically download
+  data merely because the provider exists. Ingestion remains an explicit
+  operator action through `ingest_historical_data.py` (or
+  `verify_upstox_live.py` for a single one-month check).
+* Not connected to Phase 6F.
+* Provider-side rate limits / holidays are reported honestly; missing trading
+  days are never fabricated.
