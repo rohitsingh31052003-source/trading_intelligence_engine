@@ -23,6 +23,7 @@ import pytest
 
 from engine.data.historical_provider import (
     UPSTOX_TOKEN_ENV,
+    UPSTOX_USER_AGENT,
     UpstoxHistoricalDataProvider,
     _upstox_monthly_chunks,
     _upstox_timestamp_to_utc,
@@ -288,13 +289,98 @@ class TestUrlAndAuth:
         # fake only sees the URL/headers, so implicit method is GET.
         assert p._fake.calls[0][1]["Authorization"].startswith("Bearer ")
 
+    def test_user_agent_header_sent(self):
+        # REGRESSION (live failure): the Cloudflare edge in front of
+        # api.upstox.com rejects urllib's default Python-urllib/x.y
+        # User-Agent with HTTP 403 (Error 1010 browser_signature_banned),
+        # so _fetch_one MUST send an explicit User-Agent header.
+        # urllib canonicalizes header names (``User-agent``) on the wire.
+        p = self._ok_provider()
+        p.fetch(_request())
+        headers = p._fake.calls[0][1]
+        ua = {k.lower(): v for k, v in headers.items()}.get("user-agent")
+        assert ua is not None
+        assert ua == UPSTOX_USER_AGENT
+        assert "Python-urllib/3" not in ua
+
+    def test_default_user_agent_constant_is_explicit(self):
+        # The constant must never fall back to urllib's blocked default
+        # (identified by the canonical ``Python-urllib/`` signature).
+        assert UPSTOX_USER_AGENT
+        assert "Python-urllib/" not in UPSTOX_USER_AGENT
+
 
 # ============================================================
 # 11-13. PARSING / CONVERSION / TIMESTAMP NORMALIZATION
 # ============================================================
 
+#: The REAL Upstox V3 response body: the candle list is nested under
+#: ``data.candles`` (verified against the official V3 documentation and
+#: the real API — rows ``[timestamp, open, high, low, close, volume,
+#: open_interest]``). The 7-th element (open_interest) is ignored by the
+#: canonical OHLCV contract. ``2022-12-30T15:15:00+05:30`` is the exact
+#: real candle timestamp furnished during live verification.
+def _v3_payload(rows) -> dict:
+    return {"status": "success", "data": {"candles": rows}}
+
 
 class TestParsingAndNormalization:
+    def test_parse_real_v3_response_shape(self):
+        rows = [_row(_ist("2022-12-30T15:15:00+05:30"))]
+        candles = UpstoxHistoricalDataProvider._parse_candles(_v3_payload(rows))
+        assert len(candles) == 1
+        c = candles[0]
+        assert c.timestamp == datetime(2022, 12, 30, 9, 45, tzinfo=UTC)
+
+    def test_parse_legacy_flat_candles_backward_compatible(self):
+        # The provider historically accepted a flat ``candles`` list;
+        # that lenient location remains supported so existing callers /
+        # imports of the pre-V3 shape keep working.
+        rows = [_row(_ist("2022-12-30T15:15:00+05:30"))]
+        candles = UpstoxHistoricalDataProvider._parse_candles(
+            {"status": "success", "candles": rows},
+        )
+        assert len(candles) == 1
+
+    def test_parse_missing_data_and_candles_rejected(self):
+        # Neither ``data.candles`` nor a top-level ``candles`` list: the
+        # payload is malformed and must raise, never silently EMPTY.
+        with pytest.raises(ValueError):
+            UpstoxHistoricalDataProvider._parse_candles(
+                {"status": "success", "data": {}},
+            )
+
+    def test_fetch_real_v3_shape_is_not_empty(self):
+        # REGRESSION (the live failure): a successful Upstox V3
+        # response containing real candles must NOT become EMPTY.
+        rows = _reliance_15m_rows("2022-12-01", 5)
+        p = _make_provider({
+            _chunk_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request())
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) == 5
+        assert [c.timestamp for c in response.candles] == sorted(
+            [c.timestamp for c in response.candles],
+        )
+
+    def test_fetch_real_v3_single_candle_timestamp_normalized(self):
+        # The exact real candle timestamp supplied during live Upstox
+        # verification must normalize to timezone-aware UTC.
+        rows = [_row(_ist("2022-12-30T15:15:00+05:30"))]
+        p = _make_provider({
+            _chunk_url("2022-12-01", "2023-01-01"): _v3_payload(rows),
+        })
+        response = p.fetch(_request())
+        assert response.status is ProviderResponseStatus.OK
+        assert len(response.candles) == 1
+        assert response.candles[0].timestamp == datetime(
+            2022, 12, 30, 9, 45, tzinfo=UTC,
+        )
+        assert response.candles[0].timestamp.tzinfo is not None
+
+
+class TestParsingAndNormalizationLegacy:
     def test_parse_success_payload(self):
         rows = [_row(_ist("2022-12-01T09:15:00+05:30"))]
         candles = UpstoxHistoricalDataProvider._parse_candles(_payload(rows))
@@ -559,6 +645,59 @@ class TestRangeSemantics:
         assert len(p._fake.calls) == 24  # 24 monthly chunks, not 1 giant
         for url, _, _ in p._fake.calls:
             assert url.count("/") > 0  # every call is a bounded URL
+
+    def _url_dates(self, url: str) -> tuple[str, str]:
+        """Extract (to_date, from_date) from the URL path. The Upstox
+        endpoint is ``/historical-candle/{instrument_key}/{unit}/
+        {interval}/{to_date}/{from_date}`` so the two final path
+        segments are the day labels."""
+        parts = url.rstrip("/").split("/")
+        return parts[-2], parts[-1]  # (to_date, from_date)
+
+    def test_url_date_order_to_ge_from_single_month(self):
+        # December 2022 (the live-verified window) must produce a URL
+        # whose ``to_date`` is 2023-01-01 (clamped to the requested end)
+        # and whose ``from_date`` is 2022-12-01, with to >= from.
+        start = datetime(2022, 12, 1, tzinfo=UTC)
+        end = datetime(2023, 1, 1, tzinfo=UTC)
+        p = _make_provider({
+            _chunk_url("2022-12-01", "2023-01-01"): _v3_payload([]),
+        })
+        p.fetch(_request(start=start, end=end))
+        assert len(p._fake.calls) == 1
+        to_date, from_date = self._url_dates(p._fake.calls[0][0])
+        assert from_date == "2022-12-01"
+        assert to_date == "2023-01-01"
+        assert to_date >= from_date  # never reversed
+
+    def test_url_date_order_multi_month_every_chunk(self):
+        # For several month chunks spanning 2022-12-15 .. 2023-02-10,
+        # every generated URL must satisfy ``to_date >= from_date``.
+        start = datetime(2022, 12, 15, tzinfo=UTC)
+        end = datetime(2023, 2, 10, tzinfo=UTC)
+        p = _make_provider()
+        p.fetch(_request(start=start, end=end))
+        # 2022-12-15..2023-01-01 and 2023-01-01..2023-02-01 and
+        # 2023-02-01..2023-02-10 -> three bounded monthly chunks.
+        assert len(p._fake.calls) == 3
+        for url, _, _ in p._fake.calls:
+            to_date, from_date = self._url_dates(url)
+            assert to_date >= from_date, (to_date, from_date)
+            assert from_date >= "2022-12-15"
+            assert to_date <= "2023-02-10"
+
+    def test_url_date_order_one_month_mid_month(self):
+        start = datetime(2022, 12, 20, tzinfo=UTC)
+        end = datetime(2023, 1, 1, tzinfo=UTC)
+        p = _make_provider({
+            _chunk_url("2022-12-20", "2023-01-01"): _v3_payload([]),
+        })
+        p.fetch(_request(start=start, end=end))
+        assert len(p._fake.calls) == 1
+        to_date, from_date = self._url_dates(p._fake.calls[0][0])
+        assert from_date == "2022-12-20"
+        assert to_date == "2023-01-01"
+        assert to_date >= from_date
 
 
 # ============================================================

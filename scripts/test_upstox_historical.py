@@ -70,7 +70,9 @@ def _row(ts: datetime, open_p=2400.0) -> list:
 
 
 def _payload(rows) -> dict:
-    return {"status": "success", "candles": rows, "meta": {}}
+    # Real Upstox V3 response shape: the candle list is nested under
+    # ``data.candles``.
+    return {"status": "success", "data": {"candles": rows}}
 
 
 def _request(instrument="RELIANCE", timeframe="15m", start=_START, end=_END):

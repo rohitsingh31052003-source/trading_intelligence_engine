@@ -573,6 +573,15 @@ UPSTOX_HTTP_TIMEOUT = 30.0
 #: by the provider before the payload reaches the JSON parser.
 UPSTOX_ACCEPT_ENCODING = "gzip, deflate"
 
+#: User-Agent sent to the Upstox API. The Cloudflare edge in front of
+#: ``api.upstox.com`` rejects urllib's default ``Python-urllib/x.y``
+#: User-Agent with HTTP 403 / Error 1010
+#: (``browser_signature_banned``), so an explicit, neutral User-Agent
+#: must be sent. This is the LIVE FAILURE that previously surfaced as
+#: an empty/error Upstox response despite the endpoint returning HTTP
+#: 200 when a real User-Agent (e.g. curl) is used.
+UPSTOX_USER_AGENT = "python-urllib/upstox-historical-provider"
+
 
 def _default_upstox_instrument_key_map() -> dict[str, str]:
     """Default instrument -> Upstox instrument-key mapping.
@@ -947,6 +956,11 @@ class UpstoxHistoricalDataProvider:
             headers={
                 "Accept": "application/json",
                 "Accept-Encoding": UPSTOX_ACCEPT_ENCODING,
+                # The Cloudflare edge rejects urllib's default
+                # ``Python-urllib/x.y`` User-Agent (HTTP 403 / Error
+                # 1010), so an explicit, neutral User-Agent is always
+                # sent.
+                "User-Agent": UPSTOX_USER_AGENT,
                 "Authorization": f"Bearer {token}",
             },
         )
@@ -1006,7 +1020,10 @@ class UpstoxHistoricalDataProvider:
         constructed:
 
         * top-level ``status == "success"``
-        * ``candles`` is a (possibly empty) list
+        * the candle list ``data.candles`` (Upstox V3 nests the list
+          under ``data``) is a (possibly empty) list; a top-level
+          ``candles`` list is also accepted for backward compatibility
+          with the pre-V3 shape
         * every candle row is a 7-element list/sequence whose first six
           elements are the OHLCV row ``[timestamp, open, high, low,
           close, volume]`` (the seventh, ``open_interest``, is ignored —
@@ -1026,9 +1043,17 @@ class UpstoxHistoricalDataProvider:
                 f"Upstox response status is {payload.get('status')!r}; "
                 "expected 'success'.",
             )
-        raw = payload.get("candles")
+        # Upstox V3 returns the candle list under ``data.candles``.
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("candles"), list):
+            raw = data.get("candles")
+        else:
+            # Backward-compatible flat ``candles`` location.
+            raw = payload.get("candles")
         if not isinstance(raw, list):
-            raise ValueError("Upstox response is missing a 'candles' list.")
+            raise ValueError(
+                "Upstox response is missing a 'data.candles' list.",
+            )
         candles: list[OHLCVCandle] = []
         for row_index, row in enumerate(raw):
             if not isinstance(row, (list, tuple)) or len(row) < 6:
@@ -1075,7 +1100,9 @@ class UpstoxHistoricalDataProvider:
 
 
 __all__ = [
+    "UPSTOX_ACCEPT_ENCODING",
     "UPSTOX_TOKEN_ENV",
+    "UPSTOX_USER_AGENT",
     "DeterministicLocalHistoricalProvider",
     "HistoricalMarketDataProvider",
     "HistoricalProviderResponse",

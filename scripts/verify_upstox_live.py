@@ -165,10 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Stored           : {store_result.path}")
         print(f"Records Added    : {store_result.records_added}")
         print(f"Total Stored     : {store_result.total_candles}")
-        reloaded = store.load_historical(args.instrument, args.timeframe)
-        if reloaded.count > 0:
+        reloaded = store.load_candles(args.instrument, args.timeframe)
+        if len(reloaded) > 0:
             print(
-                f"Reload check     : PASS ({reloaded.count} candles reloaded)",
+                f"Reload check     : PASS ({len(reloaded)} candles reloaded)",
             )
         else:
             print("Reload check     : FAIL")

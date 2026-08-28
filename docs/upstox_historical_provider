@@ -86,6 +86,7 @@ utilities.
 ```
 GET https://api.upstox.com/v3/historical-candle/{instrument_key}/{unit}/{interval}/{to_date}/{from_date}
 Accept: application/json
+User-Agent: python-urllib/upstox-historical-provider
 Authorization: Bearer <UPSTOX_ANALYTICS_TOKEN>
 ```
 
@@ -94,8 +95,16 @@ Authorization: Bearer <UPSTOX_ANALYTICS_TOKEN>
   provider response vocabulary (`ERROR` / `EMPTY`).
 * `Accept-Encoding: gzip, deflate` is set (the Upstox gateway rejects
   urllib's default `identity`).
+* An explicit `User-Agent` is ALWAYS sent. The Cloudflare edge in front of
+  `api.upstox.com` rejects urllib's default `Python-urllib/x.y` User-Agent
+  with HTTP 403 / Error 1010 (`browser_signature_banned`), which previously
+  made the live provider return an empty/error Upstox response even though
+  the endpoint returned HTTP 200 when a real User-Agent (e.g. curl) was used.
+  The `User-Agent` never contains the token.
 * The response is validated before constructing `OHLCVCandle` objects:
-  `status == "success"`, `candles` list present, row shape valid
+  `status == "success"`, the `data.candles` list present (Upstox V3
+  nests the candle list under `data`; a top-level `candles` list is also
+  accepted for backward compatibility), row shape valid
   (`[timestamp, open, high, low, close, volume, open_interest]`),
   numeric OHLCV finite, timestamps parseable. `open_interest` is ignored —
   the canonical OHLCV contract has no field for it.
