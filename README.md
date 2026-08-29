@@ -416,10 +416,17 @@ python scripts/ingest_historical_data.py \
   `YahooFinanceProvider.get_history`; graceful when yfinance/pandas are
   unavailable), and an optional `upstox-historical` adapter (real-HTTP Upstox
   V3 Historical Candle API; requires the `UPSTOX_ANALYTICS_TOKEN` env var;
-  15m intraday only; intraday ranges are split into bounded monthly calendar
-  chunks; timestamps normalized to UTC). Yahoo remains the LIVE/near-live
-  provider; Upstox is an additive historical provider. Enable an Upstox
-  one-month live check with:
+  15m intraday + 1D daily for the research universe
+  `NIFTY / RELIANCE / TCS / HDFCBANK / ICICIBANK`; intraday ranges are split
+  into bounded monthly calendar chunks; timestamps normalized to UTC; daily
+  response rows are filtered to IST midnight day-labels). Yahoo remains the
+  LIVE/near-live provider; Upstox is an additive historical provider. Corpus
+  preparation (a planning-only CLI that prints the ingestion/coverage work
+  matrix — universe × timeframes × monthly chunks — from the existing
+  `data/historical` store) is available via
+  `scripts/prepare_corpus_data.py`; execution of each planned request stays
+  with `ingest_historical_data.py`. Enable an Upstox one-month live check
+  with:
   ```bash
   python scripts/verify_upstox_live.py   # RELIANCE 15m 2022-12-01 -> 2023-01-01
   ```
