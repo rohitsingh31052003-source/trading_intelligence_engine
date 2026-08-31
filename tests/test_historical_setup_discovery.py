@@ -96,13 +96,18 @@ def _slice(
     )
 
 
-def _market_context() -> MarketContext:
+def _market_context(
+    *,
+    confirmed_swings: int = 2,
+    trend_state: MarketTrendState = MarketTrendState.BULLISH,
+    structure_intact: bool = True,
+) -> MarketContext:
     return MarketContext(
         index=0,
         trend=MarketTrend(
-            state=MarketTrendState.BULLISH,
+            state=trend_state,
             bias=StructureBias.BULLISH,
-            structure_intact=True,
+            structure_intact=structure_intact,
         ),
         range=RangeContext(
             state=RangeState.NOT_IN_RANGE,
@@ -119,12 +124,15 @@ def _market_context() -> MarketContext:
             distance_to_resistance=None,
             location=PriceLocation.UNKNOWN,
         ),
+        confirmed_swings=confirmed_swings,
     )
 
 
 def _state_with_structure(
     ts: datetime,
     candles: Sequence[OHLCVCandle],
+    *,
+    confirmed_swings: int = 2,
 ) -> HistoricalMarketState:
     return HistoricalMarketState(
         instrument="NIFTY",
@@ -133,7 +141,7 @@ def _state_with_structure(
         context_timeframe="1D",
         setup_slice=_slice(candles, ts, inclusive=True),
         context_slice=_slice([], ts, inclusive=False),
-        setup_context=_market_context(),
+        setup_context=_market_context(confirmed_swings=confirmed_swings),
         context_context=None,
         mtf_alignment="UNKNOWN",
         latest_usable_setup_timestamp=candles[-1].timestamp if candles else None,
@@ -168,9 +176,10 @@ def _valid_point(
     *,
     has_structure: bool = True,
     history_count: int | None = None,
+    confirmed_swings: int = 2,
 ) -> CorpusEvaluationPoint:
     state = (
-        _state_with_structure(ts, candles)
+        _state_with_structure(ts, candles, confirmed_swings=confirmed_swings)
         if has_structure
         else _state_without_structure(ts, candles)
     )
@@ -251,7 +260,10 @@ class TestCandidateDetection:
         assert c.setup_timeframe == "15m"
         assert c.context_timeframe == "1D"
         assert c.history_count == 1
-        assert c.reason == "structure available"
+        assert c.reason == (
+            "directional structure present and intact "
+            "(BULLISH, structure_intact, 2 confirmed swings)"
+        )
 
     def test_single_valid_point_without_structure_is_not_candidate(self) -> None:
         ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
@@ -266,7 +278,7 @@ class TestCandidateDetection:
         c = result.candidates[0]
         assert c.is_candidate is False
         assert c.has_structure is False
-        assert c.reason == "no structure"
+        assert c.reason == "no market structure"
 
     def test_skipped_point_is_not_candidate(self) -> None:
         ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
@@ -426,3 +438,482 @@ class TestNoTradingBehavior:
         assert point.status == CorpusPointStatus.VALID
         assert point.state is not None
         assert point.state.has_structure is True
+
+
+class TestCandidateContract:
+    """The candidate contract contains ONLY observation-time information."""
+
+    def test_candidate_fields_are_observation_time_only(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(ts, candles, has_structure=True)
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        expected_fields = {
+            "instrument",
+            "evaluation_time",
+            "setup_timeframe",
+            "context_timeframe",
+            "history_count",
+            "status",
+            "has_structure",
+            "is_candidate",
+            "reason",
+        }
+        assert expected_fields == set(c.__dataclass_fields__.keys())
+
+    def test_candidate_has_no_forbidden_attributes(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(ts, candles, has_structure=True)
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        forbidden = (
+            "future_return",
+            "future_candles",
+            "target_result",
+            "stop_result",
+            "win_loss",
+            "profitability",
+            "decision",
+            "execution",
+            "confidence",
+            "quality_score",
+            "outcome",
+            "evidence",
+            "aggregated_evidence",
+            "score",
+            "weight",
+            "probability",
+            "expected_return",
+        )
+        for attr in forbidden:
+            assert not hasattr(c, attr), f"candidate must not have {attr}"
+
+    def test_candidate_is_frozen_and_slotted(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(ts, candles, has_structure=True)
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.__dataclass_params__.frozen
+        assert c.__dataclass_params__.slots
+
+    def test_candidate_values_match_corpus_point_at_observation_time(
+        self,
+    ) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, history_count=7
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.instrument == point.instrument
+        assert c.evaluation_time == point.evaluation_time
+        assert c.setup_timeframe == point.setup_timeframe
+        assert c.context_timeframe == point.context_timeframe
+        assert c.history_count == point.history_count
+        assert c.status == point.status.value
+        assert c.has_structure == point.state.has_structure
+        assert c.is_candidate is True
+        assert c.reason == (
+            "directional structure present and intact "
+            "(BULLISH, structure_intact, 2 confirmed swings)"
+        )
+
+    def test_candidate_deterministic_from_same_point(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(ts, candles, has_structure=True)
+
+        engine = MinimalSetupDiscoveryEngine()
+        r1 = engine.discover([point])
+        r2 = engine.discover([point])
+
+        assert r1.candidates[0] == r2.candidates[0]
+        assert r1.candidates[0] is not r2.candidates[0]
+
+    def test_skipped_point_candidate_has_no_future_outcome(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        point = _skipped_point(ts, CorpusPointStatus.MISSING_DATA)
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is False
+        assert c.has_structure is False
+        assert c.status == "MISSING_DATA"
+        assert "skipped" in c.reason
+        assert c.history_count == 0
+        assert not hasattr(c, "outcome")
+        assert not hasattr(c, "win")
+        assert not hasattr(c, "loss")
+
+
+class TestSetupCriterion:
+    """The directional-structure criterion controls candidate selection."""
+
+    def test_bullish_structure_intact_two_swings_is_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is True
+        assert c.reason == (
+            "directional structure present and intact "
+            "(BULLISH, structure_intact, 2 confirmed swings)"
+        )
+
+    def test_bearish_structure_intact_two_swings_is_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        state = HistoricalMarketState(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            setup_slice=_slice(candles, ts, inclusive=True),
+            context_slice=_slice([], ts, inclusive=False),
+            setup_context=MarketContext(
+                index=0,
+                trend=MarketTrend(
+                    state=MarketTrendState.BEARISH,
+                    bias=StructureBias.BEARISH,
+                    structure_intact=True,
+                ),
+                range=RangeContext(
+                    state=RangeState.NOT_IN_RANGE,
+                    high=None,
+                    low=None,
+                    width=None,
+                    position=None,
+                    reason="directional",
+                ),
+                support_resistance=SupportResistanceContext(
+                    support=None,
+                    resistance=None,
+                    distance_to_support=None,
+                    distance_to_resistance=None,
+                    location=PriceLocation.UNKNOWN,
+                ),
+                confirmed_swings=2,
+            ),
+            context_context=None,
+            mtf_alignment="UNKNOWN",
+            latest_usable_setup_timestamp=candles[-1].timestamp,
+            latest_usable_context_timestamp=None,
+            structure_unavailable_reasons=(),
+        )
+        point = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=state,
+            history_count=len(candles),
+            reason="",
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is True
+        assert c.reason == (
+            "directional structure present and intact "
+            "(BEARISH, structure_intact, 2 confirmed swings)"
+        )
+
+    def test_range_trend_is_not_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        state = HistoricalMarketState(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            setup_slice=_slice(candles, ts, inclusive=True),
+            context_slice=_slice([], ts, inclusive=False),
+            setup_context=MarketContext(
+                index=0,
+                trend=MarketTrend(
+                    state=MarketTrendState.RANGE,
+                    bias=StructureBias.NEUTRAL,
+                    structure_intact=True,
+                ),
+                range=RangeContext(
+                    state=RangeState.NOT_IN_RANGE,
+                    high=None,
+                    low=None,
+                    width=None,
+                    position=None,
+                    reason="directional",
+                ),
+                support_resistance=SupportResistanceContext(
+                    support=None,
+                    resistance=None,
+                    distance_to_support=None,
+                    distance_to_resistance=None,
+                    location=PriceLocation.UNKNOWN,
+                ),
+                confirmed_swings=2,
+            ),
+            context_context=None,
+            mtf_alignment="UNKNOWN",
+            latest_usable_setup_timestamp=candles[-1].timestamp,
+            latest_usable_context_timestamp=None,
+            structure_unavailable_reasons=(),
+        )
+        point = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=state,
+            history_count=len(candles),
+            reason="",
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is False
+        assert "non-directional trend (RANGE)" in c.reason
+
+    def test_broken_structure_is_not_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        state = HistoricalMarketState(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            setup_slice=_slice(candles, ts, inclusive=True),
+            context_slice=_slice([], ts, inclusive=False),
+            setup_context=MarketContext(
+                index=0,
+                trend=MarketTrend(
+                    state=MarketTrendState.BULLISH,
+                    bias=StructureBias.BULLISH,
+                    structure_intact=False,
+                ),
+                range=RangeContext(
+                    state=RangeState.NOT_IN_RANGE,
+                    high=None,
+                    low=None,
+                    width=None,
+                    position=None,
+                    reason="directional",
+                ),
+                support_resistance=SupportResistanceContext(
+                    support=None,
+                    resistance=None,
+                    distance_to_support=None,
+                    distance_to_resistance=None,
+                    location=PriceLocation.UNKNOWN,
+                ),
+                confirmed_swings=2,
+            ),
+            context_context=None,
+            mtf_alignment="UNKNOWN",
+            latest_usable_setup_timestamp=candles[-1].timestamp,
+            latest_usable_context_timestamp=None,
+            structure_unavailable_reasons=(),
+        )
+        point = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=state,
+            history_count=len(candles),
+            reason="",
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is False
+        assert "structure broken" in c.reason
+
+    def test_insufficient_swings_is_not_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+
+        for swing_count in (0, 1):
+            point = _valid_point(
+                ts,
+                candles,
+                has_structure=True,
+                confirmed_swings=swing_count,
+            )
+            engine = MinimalSetupDiscoveryEngine()
+            result = engine.discover([point])
+            c = result.candidates[0]
+
+            assert c.is_candidate is False
+            assert (
+                f"insufficient confirmed swings ({swing_count})"
+                in c.reason
+            )
+
+    def test_two_swings_is_boundary_threshold(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=1
+        )
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        assert result.candidates[0].is_candidate is False
+
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        assert result.candidates[0].is_candidate is True
+
+    def test_neutral_trend_is_not_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        state = HistoricalMarketState(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            setup_slice=_slice(candles, ts, inclusive=True),
+            context_slice=_slice([], ts, inclusive=False),
+            setup_context=MarketContext(
+                index=0,
+                trend=MarketTrend(
+                    state=MarketTrendState.NEUTRAL,
+                    bias=StructureBias.NEUTRAL,
+                    structure_intact=True,
+                ),
+                range=RangeContext(
+                    state=RangeState.NOT_IN_RANGE,
+                    high=None,
+                    low=None,
+                    width=None,
+                    position=None,
+                    reason="directional",
+                ),
+                support_resistance=SupportResistanceContext(
+                    support=None,
+                    resistance=None,
+                    distance_to_support=None,
+                    distance_to_resistance=None,
+                    location=PriceLocation.UNKNOWN,
+                ),
+                confirmed_swings=2,
+            ),
+            context_context=None,
+            mtf_alignment="UNKNOWN",
+            latest_usable_setup_timestamp=candles[-1].timestamp,
+            latest_usable_context_timestamp=None,
+            structure_unavailable_reasons=(),
+        )
+        point = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=state,
+            history_count=len(candles),
+            reason="",
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is False
+        assert "non-directional trend (NEUTRAL)" in c.reason
+
+    def test_skipped_point_remains_non_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        for status in (
+            CorpusPointStatus.INSUFFICIENT_HISTORY,
+            CorpusPointStatus.MISSING_DATA,
+            CorpusPointStatus.DATA_GAP,
+            CorpusPointStatus.INVALID,
+        ):
+            point = _skipped_point(ts, status)
+            engine = MinimalSetupDiscoveryEngine()
+            result = engine.discover([point])
+            c = result.candidates[0]
+            assert c.is_candidate is False
+            assert "skipped" in c.reason
+
+    def test_criterion_reason_identifies_criterion(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert "directional structure present and intact" in c.reason
+        assert "BULLISH" in c.reason
+        assert "structure_intact" in c.reason
+        assert "confirmed swings" in c.reason
+
+    def test_criterion_does_not_access_future_candles(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover([point])
+        c = result.candidates[0]
+
+        assert c.is_candidate is True
+        assert not hasattr(c, "future_candles")
+        assert not hasattr(c, "future_return")
+
+    def test_criterion_deterministic_output(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        engine = MinimalSetupDiscoveryEngine()
+        r1 = engine.discover([point])
+        r2 = engine.discover([point])
+
+        assert r1.candidates[0] == r2.candidates[0]
+        assert r1.candidates[0].reason == r2.candidates[0].reason

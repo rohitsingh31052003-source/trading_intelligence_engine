@@ -46,6 +46,7 @@ from engine.models.historical_setup_discovery import (
     HistoricalSetupCandidate,
     SetupDiscoveryResult,
 )
+from engine.models.market_context import MarketTrendState
 from engine.models.research_corpus import CorpusEvaluationPoint
 
 
@@ -125,16 +126,77 @@ class MinimalSetupDiscoveryEngine:
         for idx, point in enumerate(points):
             if idx % self.sample_every != 0:
                 continue
-            has_structure = (
-                point.state is not None and point.state.has_structure
+            if not point.status.is_usable:
+                candidates.append(
+                    HistoricalSetupCandidate(
+                        instrument=point.instrument,
+                        evaluation_time=point.evaluation_time,
+                        setup_timeframe=point.setup_timeframe,
+                        context_timeframe=point.context_timeframe,
+                        history_count=point.history_count,
+                        status=point.status.value,
+                        has_structure=False,
+                        is_candidate=False,
+                        reason=f"skipped: {point.status.value}",
+                    ),
+                )
+                continue
+
+            setup_ctx = (
+                point.state.setup_context
+                if point.state is not None
+                else None
             )
-            is_candidate = has_structure and point.status.is_usable
-            if is_candidate:
-                reason = "structure available"
-            elif not point.status.is_usable:
-                reason = f"skipped: {point.status.value}"
+            if setup_ctx is None:
+                candidates.append(
+                    HistoricalSetupCandidate(
+                        instrument=point.instrument,
+                        evaluation_time=point.evaluation_time,
+                        setup_timeframe=point.setup_timeframe,
+                        context_timeframe=point.context_timeframe,
+                        history_count=point.history_count,
+                        status=point.status.value,
+                        has_structure=False,
+                        is_candidate=False,
+                        reason="no market structure",
+                    ),
+                )
+                continue
+
+            trend_state = setup_ctx.trend.state
+            is_directional = trend_state in (
+                MarketTrendState.BULLISH,
+                MarketTrendState.BEARISH,
+            )
+            structure_intact = setup_ctx.trend.structure_intact
+            confirmed_swings = setup_ctx.confirmed_swings
+
+            if (
+                is_directional
+                and structure_intact
+                and confirmed_swings >= 2
+            ):
+                is_candidate = True
+                reason = (
+                    f"directional structure present and intact "
+                    f"({trend_state.value}, structure_intact, "
+                    f"{confirmed_swings} confirmed swings)"
+                )
             else:
-                reason = "no structure"
+                is_candidate = False
+                parts = []
+                if not is_directional:
+                    parts.append(
+                        f"non-directional trend ({trend_state.value})"
+                    )
+                if not structure_intact:
+                    parts.append("structure broken")
+                if confirmed_swings < 2:
+                    parts.append(
+                        f"insufficient confirmed swings ({confirmed_swings})"
+                    )
+                reason = "; ".join(parts)
+
             candidates.append(
                 HistoricalSetupCandidate(
                     instrument=point.instrument,
@@ -143,7 +205,7 @@ class MinimalSetupDiscoveryEngine:
                     context_timeframe=point.context_timeframe,
                     history_count=point.history_count,
                     status=point.status.value,
-                    has_structure=has_structure,
+                    has_structure=True,
                     is_candidate=is_candidate,
                     reason=reason,
                 ),
