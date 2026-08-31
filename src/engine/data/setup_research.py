@@ -66,11 +66,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Iterable
 
 from engine.config.historical_outcome_config import OutcomeConfig
 from engine.config.setup_research_config import SetupResearchConfig
+from engine.data.historical_consumer import HistoricalDataConsumer
 from engine.data.historical_service import HistoricalMarketDataService
 from engine.data.historical_times import canonical_timeframe
 from engine.data.research_corpus import HistoricalResearchCorpusEngine
@@ -80,6 +81,8 @@ from engine.intelligence.performance_analytics import _compute_statistics
 from engine.intelligence.setup_confluence import SetupConfluenceEngine
 from engine.intelligence.trade_candidates import TradeCandidateEngine
 from engine.intelligence.trade_decision import TradeDecisionEngine
+from engine.models.historical_availability import HistoricalDataAvailabilityResult
+from engine.models.historical_data import HistoricalDataRequest
 from engine.models.historical_evidence import EvidenceStrength
 from engine.models.historical_outcome import (
     HistoricalOutcome,
@@ -128,6 +131,7 @@ class HistoricalSetupResearchEngine:
         setup_engine: SetupConfluenceEngine | None = None,
         candidate_engine: TradeCandidateEngine | None = None,
         decision_engine: TradeDecisionEngine | None = None,
+        historical_data_consumer: HistoricalDataConsumer | None = None,
     ) -> None:
         self.corpus = corpus
         self.config = config or SetupResearchConfig()
@@ -135,6 +139,7 @@ class HistoricalSetupResearchEngine:
         self._setups = setup_engine or SetupConfluenceEngine()
         self._candidates = candidate_engine or TradeCandidateEngine()
         self._decisions = decision_engine or TradeDecisionEngine()
+        self._historical_data_consumer = historical_data_consumer
 
     # ------------------------------------------------------------
     # PUBLIC API — DETECTION ONLY
@@ -343,6 +348,18 @@ class HistoricalSetupResearchEngine:
         after each occurrence's evaluation time within the horizon.
         ``None`` when the corpus dataset is unavailable.
         """
+
+        if self._historical_data_consumer is not None:
+            result = self._historical_data_consumer.get_historical_data(
+                HistoricalDataRequest(
+                    request.instrument,
+                    canonical_timeframe(request.setup_timeframe)
+                    or request.setup_timeframe,
+                    request.start_time or datetime.min.replace(tzinfo=UTC),
+                    request.end_time or datetime.max.replace(tzinfo=UTC),
+                ),
+            )
+            return result.candles if result.candles is not None else None
 
         service: HistoricalMarketDataService = self.corpus.service
         try:
