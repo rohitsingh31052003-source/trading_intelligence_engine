@@ -885,3 +885,83 @@ This checkpoint adds a THIN orchestration / data-availability layer on top of th
 - Regression-tested guarantees: fully-covered request returns local data with ZERO provider calls and NO token; missing/partial acquisition fetches + persists through the EXISTING service.ingest pipeline only; existing chunks are never re-fetched; rerun after success makes zero provider calls; per-chunk failures are resumable (one failed chunk does not erase acquired chunks); deterministic multi-chunk processing; CREDENTIAL_MISSING before any request; ACCESS_TOKEN never a fallback; invalid provider data cannot surface as canonical candles; future candles cannot be returned; returned candles canonical + chronological; NO completion database / `.done` file / second store (only candles.json + provenance.jsonl). Existing `scripts/ingest_corpus_data.py` and `scripts/ingest_historical_data.py` are UNCHANGED (bulk preparation stays separate from on-demand availability).
 - Files: `src/engine/models/historical_availability.py`, `src/engine/data/historical_data_availability.py`, `tests/test_historical_data_availability.py` (50 tests: fully-covered; zero-provider-calls; no-token-when-covered; missing-identification; partial-acquisition; existing-chunks-not-refetched; persistence + next-request availability; rerun-zero-calls; failed-chunk-not-covered/retried/does-not-erase; deterministic multiple chunks; missing-ACCESS-token-prevention + zero-requests + ACCESS-never-fallback + no-token-leakage + Bearer redaction; invalid-provider-data; existing-validation-enforced; future-candle-exclusion; canonical-chronological; planner/store/ingestion-pipeline reuse probes; no-second-HTTP source-scan; no-completion-DB; request-validation incl. naive/reversed/unsupported; timeframe-scoped acquisition; only-requested-dataset-loaded; NO_ACQUISITION_PATH; batch; determinism; regression + no-trading-dependency + no-future-API-params).
 - Full suite post-Checkpoint-7: 4076 passed (4026 + 50 new; 1 pre-existing StarletteDeprecationWarning). Pipeline baseline unchanged (signals=4, trades=3); Phase 6A/6B/6C/6D/3A/3B demos unchanged. No Sprint 11A-12E / Product-Phase-1-6F / Checkpoint-3A / Checkpoint-3B regression.
+
+## CHECKPOINT 9 — HISTORICAL SETUP RESEARCH & EVIDENCE PIPELINE (added)
+This checkpoint phase establishes the complete historical setup research and evidence pipeline, from setup discovery through evidence aggregation, statistical analysis, quality indicators, and evaluation. It is RESEARCH ONLY: no trading strategy, no decision-engine replacement, no prediction/ML/LLM, no live/paper-trading behavior change. All changes are ADDITIVE and backward-compatible: no Sprint 11A-12E / Product-Phase-1-7 public API signature was changed, no existing engine/model was modified (only additive new files), and all prior tests continue to pass.
+
+### Checkpoint 9.1 — Setup Discovery
+- Models (`src/engine/models/historical_setup_discovery.py`, frozen+slots): `HistoricalSetupCandidate`, `SetupDiscoveryResult`, `SetupCoverageReport`.
+- Research boundary only: identifies setup candidates at time T using only information available at T.
+- Point-in-time safe: no future candle access.
+
+### Checkpoint 9.5/9.8 — Outcome Observations
+- Models (`src/engine/models/historical_setup_outcome.py`, frozen+slots): `ForwardReturnObservation`, `PriceExcursionObservation`, `SetupObservation`, `ObservationStatus` (AVAILABLE/INSUFFICIENT_DATA).
+- Direction-neutral fixed-horizon forward price return and max upward/downward price excursion.
+- Forward return = (endpoint_price - reference_price) / reference_price.
+- Upward excursion = (max_high - reference_price) / reference_price.
+- Downward excursion = (min_low - reference_price) / reference_price.
+- None when insufficient data (never computed over partial horizon).
+
+### Checkpoint 9.9 — Evidence Aggregation
+- Models (`src/engine/models/historical_setup_evidence.py`, frozen+slots): `SetupEvidenceOccurrence`, `SetupEvidenceBatch`.
+- One occurrence of a setup criterion with paired neutral observations.
+- Immutable collection of occurrences for the same setup criterion.
+- Deterministic dedup by occurrence_id, chronological ordering.
+
+### Checkpoint 9.10 — Statistical Evidence Analysis
+- Models (`src/engine/models/historical_setup_statistics.py`, frozen+slots): `SetupEvidenceStatisticsReport`.
+- Neutral descriptive statistics only: forward return mean/median/min/max, upward/downward excursion mean/median, observation counts.
+- Per-metric sufficient-data gating, preserves zero/missing/insufficient distinction.
+
+### Checkpoint 9.11 — Setup Quality Analysis
+- Models (`src/engine/models/historical_setup_quality.py`, frozen+slots): `SetupQualityReport`.
+- All statistics PLUS: positive/negative/zero forward return counts, proportion_positive_forward_return, forward_return_direction_consistency.
+- Consistency defined as max(positive, negative) / (positive + negative), ranges 0.5 (perfectly split) to 1.0 (all agree).
+- Does NOT reuse Sprint 11Y EvidenceStrength (incompatible semantics).
+
+### Checkpoint 9 — Key Design Principles
+- Deterministic immutable models (frozen+slots dataclasses).
+- Optional fields use None so "unobserved" is never silently a real value.
+- No business logic in models; __post_init__ structural validation only.
+- Explicit rejection of trade-level evidence abstractions.
+- Zero/missing/insufficient handling preserved throughout.
+
+## CHECKPOINT 10.1 — HISTORICAL DATA ACQUISITION BOUNDARY AUDIT (added)
+- Historical data acquisition boundary with availability checking, missing chunk detection, provider selection.
+- Yahoo historical provider and Upstox historical provider integration.
+- Validation, persistence, corpus readiness.
+
+## CHECKPOINT 10.2 — AUTOMATIC HISTORICAL DATA ACQUISITION WIRING (added)
+- `auto_acquire` automatic acquisition trigger during corpus build.
+- Availability-service delegation, existing acquisition pipeline reused.
+- No provider fallback, point-in-time slicing preserved.
+
+## CHECKPOINT 10.3 — SETUP EVIDENCE EVALUATION (added)
+- Models (`src/engine/models/historical_setup_evaluation.py`, frozen+slots): `SetupEvaluationResult`, `SetupEvaluationStatus` (NO_DATA/INSUFFICIENT_DATA/EVALUABLE).
+- Explicit minimum observation threshold (default 10).
+- No black-box score, no trading semantics.
+- Status-specific invariants enforced in __post_init__.
+
+## CHECKPOINT 10.4 — HISTORICAL SETUP BEHAVIOR (added)
+- Models (`src/engine/models/historical_setup_behavior.py`, frozen+slots): `HistoricalSetupBehaviorReport`.
+- Composes SetupEvaluationResult (Checkpoint 10.3) + SetupQualityReport (Checkpoint 9.11).
+- Descriptive historical behavior: forward-return behavior, excursion behavior, preservation of sample sizes.
+- No predictive interpretation.
+
+## CHECKPOINT 10.5 — HISTORICAL SETUP QUALITY INTERPRETATION (added)
+This checkpoint adds a transparent, deterministic, descriptive interpretation layer on top of the Checkpoint 10.4 historical behavioral-assessment boundary. It consumes a single `HistoricalSetupBehaviorReport` and produces a direction-neutral, deterministic, immutable interpretation describing what the historical behavior of this setup indicates descriptively. It is INTERPRETATION ONLY: no trading strategy, no forecasting engine, no decision engine, no scoring layer, no ranking layer. All changes are ADDITIVE and backward-compatible: no Sprint 11A-12E / Product-Phase-1-7 / Checkpoint-9/10 public API signature was changed, no existing engine/model was modified (only 2 new files), and all prior tests continue to pass (now 4170 with 94 new in tests/test_historical_setup_quality_interpretation.py; fixture path remains fully deterministic and OFFLINE).
+- New models `src/engine/models/historical_setup_quality_interpretation.py` (frozen+slots): enums `EvidenceAvailability` (NO_HISTORICAL_DATA/LIMITED_HISTORICAL_DATA/SUFFICIENT_HISTORICAL_DATA), `ForwardReturnBehavior` (NO_DIRECTIONAL_OBSERVATION/PREDOMINANTLY_POSITIVE/PREDOMINANTLY_NEGATIVE/MIXED_DIRECTION), `DirectionalConsistency` (NOT_EVALUABLE/HIGH_CONSISTENCY/MODERATE_CONSISTENCY/LOW_CONSISTENCY); model `HistoricalSetupQualityInterpretation` (interpretation_id, behavior_report_id, evaluation_id, batch_id, criterion_key, instrument, setup_timeframe, context_timeframe, evaluation_state fields, evidence_availability, forward_return_behavior, directional_consistency, historical_behavior_summary).
+- Interpretation function `interpret_setup_behavior(behavior: HistoricalSetupBehaviorReport) -> HistoricalSetupQualityInterpretation`: pure, deterministic, stateless, downstream-only. Consumes a single already-computed behavior report. Never re-reads candles, never re-evaluates outcomes, never feeds information backward into discovery.
+- Classification rules (explicit, documented, deterministic, independently testable):
+  - Evidence availability: derived directly from evaluation_status (NO_DATA -> NO_HISTORICAL_DATA; INSUFFICIENT_DATA -> LIMITED_HISTORICAL_DATA; EVALUABLE -> SUFFICIENT_HISTORICAL_DATA).
+  - Forward-return behavior: NO_DIRECTIONAL_OBSERVATION when forward_return_observation_count == 0; PREDOMINANTLY_POSITIVE when proportion > 0.6; PREDOMINANTLY_NEGATIVE when proportion < 0.4; MIXED_DIRECTION when 0.4 <= proportion <= 0.6.
+  - Directional consistency: NOT_EVALUABLE when forward_return_direction_consistency is None; HIGH_CONSISTENCY when >= 0.75; MODERATE_CONSISTENCY when 0.6 <= x < 0.75; LOW_CONSISTENCY when 0.5 <= x < 0.6.
+- Threshold documentation: The 0.6/0.4 boundaries for forward-return behavior are symmetric around 0.5 (perfectly split). The 0.75/0.6 boundaries for directional consistency partition the [0.5, 1.0] range into three descriptive bands.
+- Deterministic identity: interpretation_id = "setup-quality-interpretation-" + SHA-256[:16] of behavior_report_id.
+- No black-box score: no quality_score, confidence_score, prediction_score, weighted composite score, opaque numeric ranking, machine-learning score, hidden threshold aggregation.
+- No forbidden semantics: no BUY, SELL, LONG, SHORT, WIN, LOSS, PROFIT, PROFITABLE, STOP, TARGET, RISK, REWARD, EXPECTANCY, SHARPE, POSITION, SIGNAL, PREDICTION.
+- Preserve zero/missing/insufficient distinction: real observed zero is valid; missing is None; insufficient-observation state is explicit.
+- Point-in-time safety: no candle access, no provider access, no store access, no corpus access, no temporal slicing, no discovery mutation.
+- New enums are distinct from SetupEvaluationStatus, Sprint 11Y EvidenceStrength, Sprint 11Z StrategyAssessmentStatus, Sprint 12A DecisionContextStatus.
+- Tests `tests/test_historical_setup_quality_interpretation.py`: 94 deterministic, network-free tests covering 14 areas (model frozen/slots/validation/deterministic identity; evidence availability; forward-return behavior; directional consistency; historical data states; missing data; excursions; safety; determinism; forbidden semantics; immutability; Checkpoint 10.4 compatibility; type validation; historical behavior summary; enum distinctness).
+- Full suite post-Checkpoint-10.5: 4170 passed (4076 + 94 new; 1 pre-existing StarletteDeprecationWarning). Pipeline baseline unchanged (signals=4, trades=3); all prior demos unchanged. No Sprint 11A-12E / Product-Phase-1-7 / Checkpoint-9/10 regression.
