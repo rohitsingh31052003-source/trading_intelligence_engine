@@ -51,3 +51,11 @@ def test_historical_data_consumer_can_be_implemented():
     consumer = ConcreteConsumer()
     assert hasattr(consumer, "get_historical_data")
     assert callable(consumer.get_historical_data)
+
+
+def test_historical_data_availability_service_satisfies_consumer():
+    from engine.data.historical_data_availability import (
+        HistoricalDataAvailabilityService,
+    )
+
+    assert issubclass(HistoricalDataAvailabilityService, HistoricalDataConsumer)

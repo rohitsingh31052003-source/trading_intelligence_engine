@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from engine.models.historical_availability import HistoricalDataAvailabilityResult
 from engine.models.historical_data import HistoricalDataRequest
 
 
+@runtime_checkable
 class HistoricalDataConsumer(Protocol):
     """
     Domain-facing contract for requesting historical market data.
