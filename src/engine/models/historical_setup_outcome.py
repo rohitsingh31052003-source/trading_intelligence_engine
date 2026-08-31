@@ -117,6 +117,30 @@ class SetupObservation:
     The underlying :class:`HistoricalSetupCandidate` is retained BY
     REFERENCE and never modified.
 
+    OBSERVATION-TIME PRICE ANCHOR (Checkpoint 9.7):
+
+    ``reference_price`` is the observation-time market price at evaluation
+    time ``T``. It is defined as the **close of the latest completed
+    setup-timeframe candle at or before ``T``** — i.e. the close of the
+    last candle in the corpus setup slice (which contains only candles
+    with ``timestamp <= T`` by construction).
+
+    Semantic definition:
+
+    * **Price field used:** ``close``.
+    * **Timestamp represented:** the timestamp of the last candle in the
+      corpus setup slice (the latest completed setup candle at/before ``T``).
+    * **Is it the close of the latest completed candle at/before ``T``?**
+      Yes — by definition.
+    * **Why this is point-in-time safe:** the corpus setup slice is a
+      prefix of the stored series bounded by ``timestamp <= T``; no candle
+      with ``timestamp > T`` can contribute to the slice, so no future
+      candle influences the reference price.
+
+    This anchor is ``None`` when the observation-time price cannot be
+    determined (status :attr:`INSUFFICIENT_DATA`). It is never guessed
+    or fabricated.
+
     Attributes:
 
     candidate
@@ -132,6 +156,14 @@ class SetupObservation:
     observation_status
         The :class:`ObservationStatus`.
 
+    reference_price
+        The observation-time market price at ``T`` (close of the latest
+        completed setup candle at/before ``T``), or ``None`` when it
+        cannot be determined. When
+        :attr:`observation_status` is :attr:`ObservationStatus.AVAILABLE`,
+        this must be a positive float. When it is
+        :attr:`ObservationStatus.INSUFFICIENT_DATA`, this must be ``None``.
+
     reason
         Human-readable, descriptive explanation of the observation status.
     """
@@ -139,6 +171,7 @@ class SetupObservation:
     candidate: HistoricalSetupCandidate
     future_candles: tuple[OHLCVCandle, ...]
     observation_status: ObservationStatus
+    reference_price: float | None = None
     reason: str = ""
 
     @property
@@ -179,6 +212,31 @@ class SetupObservation:
             raise ValueError(
                 "An INSUFFICIENT_DATA observation must carry no "
                 "future candles."
+            )
+        if (
+            self.observation_status is ObservationStatus.AVAILABLE
+            and self.reference_price is None
+        ):
+            raise ValueError(
+                "An AVAILABLE observation must carry a reference_price "
+                "(the observation-time price at T)."
+            )
+        if (
+            self.observation_status is ObservationStatus.AVAILABLE
+            and self.reference_price is not None
+            and self.reference_price <= 0
+        ):
+            raise ValueError(
+                "An AVAILABLE observation must carry a positive "
+                f"reference_price; got {self.reference_price}."
+            )
+        if (
+            self.observation_status is ObservationStatus.INSUFFICIENT_DATA
+            and self.reference_price is not None
+        ):
+            raise ValueError(
+                "An INSUFFICIENT_DATA observation must NOT carry a "
+                "reference_price."
             )
 
 
@@ -289,8 +347,141 @@ class ForwardReturnObservation:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class PriceExcursionObservation:
+    """
+    A direction-neutral fixed-horizon future price-excursion observation.
+
+    Represents the maximum price range observed over a horizon of
+    ``horizon_candles`` completed future candles after a historical setup
+    candidate observed at time ``T``:
+
+        candidate observation at T (reference_price)
+        -> N completed future candles
+        -> maximum upward / downward price excursion over that window
+
+    The metric is DIRECTION-NEUTRAL. It reports the maximum upward and
+    downward price movements relative to the observation-time reference
+    price. It does NOT classify the result as a win, loss, profitable,
+    successful, bullish trade, or bearish trade. It is simply a historical
+    price range observation.
+
+    The excursions are defined as:
+
+        max_upward_excursion = (max_high - reference_price) / reference_price
+        max_downward_excursion = (min_low - reference_price) / reference_price
+
+    where ``max_high`` is the highest high and ``min_low`` is the lowest low
+    among the first ``N`` future candles (all strictly after ``T``).
+
+    ``max_upward_excursion``, ``max_downward_excursion``, ``max_high`` and
+    ``min_low`` are ``None`` when fewer than ``horizon_candles`` future
+    candles are available (status :attr:`ObservationStatus.INSUFFICIENT_DATA`);
+    they are never computed over a partial window.
+
+    Attributes:
+        candidate
+            The :class:`HistoricalSetupCandidate` (information known at ``T``),
+            retained by reference and never mutated.
+        reference_price
+            The observation-time reference price (the price at ``T``).
+        horizon_candles
+            The requested horizon ``N`` — number of completed future candles.
+        max_upward_excursion
+            ``(max_high - reference_price) / reference_price``, or ``None``
+            when insufficient data.
+        max_downward_excursion
+            ``(min_low - reference_price) / reference_price``, or ``None``
+            when insufficient data.
+        max_high
+            The highest high over the window, or ``None`` when insufficient
+            data.
+        min_low
+            The lowest low over the window, or ``None`` when insufficient
+            data.
+        observation_status
+            :attr:`ObservationStatus.AVAILABLE` when the excursions are
+            computed; :attr:`ObservationStatus.INSUFFICIENT_DATA` when fewer
+            than ``horizon_candles`` future candles are available.
+        reason
+            Human-readable explanation of the observation status.
+    """
+
+    candidate: HistoricalSetupCandidate
+    reference_price: float
+    horizon_candles: int
+    max_upward_excursion: float | None
+    max_downward_excursion: float | None
+    max_high: float | None
+    min_low: float | None
+    observation_status: ObservationStatus
+    reason: str = ""
+
+    @property
+    def evaluation_time(self) -> datetime:
+        """The candidate's evaluation timestamp (information known at T)."""
+        return self.candidate.evaluation_time
+
+    @property
+    def instrument(self) -> str:
+        return self.candidate.instrument
+
+    @property
+    def setup_timeframe(self) -> str:
+        return self.candidate.setup_timeframe
+
+    @property
+    def context_timeframe(self) -> str:
+        return self.candidate.context_timeframe
+
+    def __post_init__(self) -> None:
+        if self.observation_status is ObservationStatus.AVAILABLE:
+            if self.max_upward_excursion is None:
+                raise ValueError(
+                    "An AVAILABLE price-excursion observation must carry "
+                    "a max_upward_excursion."
+                )
+            if self.max_downward_excursion is None:
+                raise ValueError(
+                    "An AVAILABLE price-excursion observation must carry "
+                    "a max_downward_excursion."
+                )
+            if self.max_high is None:
+                raise ValueError(
+                    "An AVAILABLE price-excursion observation must carry "
+                    "a max_high."
+                )
+            if self.min_low is None:
+                raise ValueError(
+                    "An AVAILABLE price-excursion observation must carry "
+                    "a min_low."
+                )
+        if self.observation_status is ObservationStatus.INSUFFICIENT_DATA:
+            if self.max_upward_excursion is not None:
+                raise ValueError(
+                    "An INSUFFICIENT_DATA price-excursion observation must "
+                    "NOT carry a max_upward_excursion."
+                )
+            if self.max_downward_excursion is not None:
+                raise ValueError(
+                    "An INSUFFICIENT_DATA price-excursion observation must "
+                    "NOT carry a max_downward_excursion."
+                )
+            if self.max_high is not None:
+                raise ValueError(
+                    "An INSUFFICIENT_DATA price-excursion observation must "
+                    "NOT carry a max_high."
+                )
+            if self.min_low is not None:
+                raise ValueError(
+                    "An INSUFFICIENT_DATA price-excursion observation must "
+                    "NOT carry a min_low."
+                )
+
+
 __all__ = [
     "ForwardReturnObservation",
     "ObservationStatus",
+    "PriceExcursionObservation",
     "SetupObservation",
 ]

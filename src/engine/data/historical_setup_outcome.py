@@ -45,6 +45,7 @@ from engine.models.historical_setup_discovery import HistoricalSetupCandidate
 from engine.models.historical_setup_outcome import (
     ForwardReturnObservation,
     ObservationStatus,
+    PriceExcursionObservation,
     SetupObservation,
 )
 from engine.models.ohlcv import OHLCVCandle
@@ -63,12 +64,16 @@ class HistoricalOutcomeAnalysisProtocol(Protocol):
     * No trading or execution behavior is invoked.
     * No future-candle leakage (only candles strictly after ``T`` are
       inspected; the candidate is never mutated).
+    * The observation-time reference price is the close of the latest
+      completed setup candle at/before ``T`` (point-in-time safe).
     """
 
     def observe(
         self,
         candidate: HistoricalSetupCandidate,
         future_candles: Sequence[OHLCVCandle],
+        *,
+        reference_price: float | None = None,
     ) -> SetupObservation: ...
 
 
@@ -97,6 +102,8 @@ class MinimalObservationEngine:
         self,
         candidate: HistoricalSetupCandidate,
         future_candles: Sequence[OHLCVCandle],
+        *,
+        reference_price: float | None = None,
     ) -> SetupObservation:
         """
         Observe the future of ``candidate`` using only the supplied
@@ -110,6 +117,14 @@ class MinimalObservationEngine:
         future candle is available, the observation carries
         :attr:`ObservationStatus.AVAILABLE`.
 
+        ``reference_price`` is the observation-time market price at ``T``
+        (the close of the latest completed setup candle at/before ``T``).
+        When ``future_candles`` is non-empty but ``reference_price`` is
+        ``None``, the observation carries
+        :attr:`ObservationStatus.INSUFFICIENT_DATA` — the forward window
+        is populated but the observation-time anchor is missing, so the
+        observation is incomplete.
+
         The result is deterministic and descriptive. The candidate is
         NEVER mutated.
         """
@@ -119,14 +134,21 @@ class MinimalObservationEngine:
             c for c in future_candles if c.timestamp > evaluation_time
         )
 
-        if not forward:
+        if not forward or reference_price is None:
             return SetupObservation(
                 candidate=candidate,
-                future_candles=forward,
+                future_candles=(),
                 observation_status=ObservationStatus.INSUFFICIENT_DATA,
+                reference_price=None,
                 reason=(
                     "No future candles are available after the evaluation "
                     "time. The observation cannot be formed."
+                    if not forward
+                    else (
+                        "Future candles are available but the observation-"
+                        "time reference price is missing. The observation "
+                        "cannot be formed."
+                    )
                 ),
             )
 
@@ -134,6 +156,7 @@ class MinimalObservationEngine:
             candidate=candidate,
             future_candles=forward,
             observation_status=ObservationStatus.AVAILABLE,
+            reference_price=reference_price,
             reason=(
                 f"{len(forward)} future candle(s) available after the "
                 "evaluation time."
@@ -146,7 +169,180 @@ __all__ = [
     "ForwardReturnProtocol",
     "HistoricalOutcomeAnalysisProtocol",
     "MinimalObservationEngine",
+    "PriceExcursionEngine",
+    "PriceExcursionProtocol",
 ]
+
+
+@runtime_checkable
+class PriceExcursionProtocol(Protocol):
+    """
+    Domain-facing contract for the fixed-horizon price-excursion metric.
+
+    A price-excursion component consumes a :class:`SetupObservation`
+    (produced by the Checkpoint 9.5 observation engine) and a horizon
+    ``N``, and returns a direction-neutral
+    :class:`PriceExcursionObservation`.
+
+    The observation carries the observation-time reference price
+    (Checkpoint 9.7): the close of the latest completed setup candle
+    at/before ``T``. The price-excursion component uses this anchor from
+    the observation — callers do NOT supply an arbitrary reference price.
+
+    The contract guarantees:
+
+    * Deterministic output for the same input.
+    * The candidate is retained by reference and never mutated.
+    * No trading or execution behavior is invoked.
+    * No future-candle leakage: the excursion is measured over the
+      already-observed future candles (all strictly after ``T``).
+    * The reference price is the observation-time anchor established by
+      Checkpoint 9.7 (point-in-time safe).
+    * The future window is exactly ``N`` completed future candles; fewer
+      than ``N`` yields :attr:`ObservationStatus.INSUFFICIENT_DATA`; a
+      partial window is never used.
+    """
+
+    def observe_price_excursion(
+        self,
+        observation: SetupObservation,
+        horizon_candles: int,
+    ) -> PriceExcursionObservation: ...
+
+
+class PriceExcursionEngine:
+    """
+    Minimal deterministic fixed-horizon price-excursion engine (Checkpoint 9.8).
+
+    This engine implements the :class:`PriceExcursionProtocol`. It consumes a
+    :class:`SetupObservation` (Checkpoint 9.5) and computes the
+    direction-neutral maximum upward and downward price excursions over the
+    first ``N`` completed future candles:
+
+        max_high = max(c.high for c in first N future candles)
+        min_low = min(c.low for c in first N future candles)
+
+        max_upward_excursion = (max_high - reference_price) / reference_price
+        max_downward_excursion = (min_low - reference_price) / reference_price
+
+    The metric is DIRECTION-NEUTRAL: it reports historical price movements,
+    not a win/loss, not a trade, not a classification.
+
+    OBSERVATION-TIME PRICE ANCHOR (Checkpoint 9.7):
+
+    The reference price is the observation-time price carried by the
+    observation (``observation.reference_price``). It is the close of the
+    latest completed setup candle at/before ``T`` — point-in-time safe
+    because the corpus setup slice only contains candles with
+    ``timestamp <= T``. The engine uses this anchor directly; callers do
+    NOT supply an arbitrary reference price.
+
+    HORIZON SEMANTICS (match Checkpoint 9.6):
+
+    * ``N`` means ``N`` completed future candles.
+    * All candles are strictly after ``T`` (guaranteed by the
+      :class:`SetupObservation`).
+    * Fewer than ``N`` future candles means explicit
+      :attr:`ObservationStatus.INSUFFICIENT_DATA`; a partial window is
+      never used.
+    * ``horizon_candles`` must be positive; a zero or negative horizon
+      yields :attr:`ObservationStatus.INSUFFICIENT_DATA`.
+    """
+
+    def observe_price_excursion(
+        self,
+        observation: SetupObservation,
+        horizon_candles: int,
+    ) -> PriceExcursionObservation:
+        """
+        Compute the direction-neutral price excursions for ``observation``.
+
+        The reference price is the observation-time price carried by the
+        observation (``observation.reference_price``), established by
+        Checkpoint 9.7 as the close of the latest completed setup candle
+        at/before ``T``. The horizon ``N`` must be positive.
+
+        If ``horizon_candles`` is not positive, fewer than
+        ``horizon_candles`` future candles are available, or the
+        observation carries no reference price, the result carries
+        :attr:`ObservationStatus.INSUFFICIENT_DATA` and no excursions are
+        computed.
+
+        The candidate is retained by reference and never mutated.
+        """
+
+        reference_price = observation.reference_price
+
+        if horizon_candles < 1:
+            return PriceExcursionObservation(
+                candidate=observation.candidate,
+                reference_price=reference_price,
+                horizon_candles=horizon_candles,
+                max_upward_excursion=None,
+                max_downward_excursion=None,
+                max_high=None,
+                min_low=None,
+                observation_status=ObservationStatus.INSUFFICIENT_DATA,
+                reason=(
+                    "Horizon must be a positive integer; got "
+                    f"{horizon_candles}. No price excursion computed."
+                ),
+            )
+
+        if reference_price is None:
+            return PriceExcursionObservation(
+                candidate=observation.candidate,
+                reference_price=reference_price,
+                horizon_candles=horizon_candles,
+                max_upward_excursion=None,
+                max_downward_excursion=None,
+                max_high=None,
+                min_low=None,
+                observation_status=ObservationStatus.INSUFFICIENT_DATA,
+                reason=(
+                    "The observation carries no reference price. "
+                    "No price excursion computed."
+                ),
+            )
+
+        if observation.future_candle_count < horizon_candles:
+            return PriceExcursionObservation(
+                candidate=observation.candidate,
+                reference_price=reference_price,
+                horizon_candles=horizon_candles,
+                max_upward_excursion=None,
+                max_downward_excursion=None,
+                max_high=None,
+                min_low=None,
+                observation_status=ObservationStatus.INSUFFICIENT_DATA,
+                reason=(
+                    f"Only {observation.future_candle_count} future candle(s) "
+                    f"available; {horizon_candles} required. No partial-"
+                    "window excursion computed."
+                ),
+            )
+
+        window = observation.future_candles[:horizon_candles]
+        max_high = max(c.high for c in window)
+        min_low = min(c.low for c in window)
+        max_upward_excursion = (max_high - reference_price) / reference_price
+        max_downward_excursion = (min_low - reference_price) / reference_price
+
+        return PriceExcursionObservation(
+            candidate=observation.candidate,
+            reference_price=reference_price,
+            horizon_candles=horizon_candles,
+            max_upward_excursion=max_upward_excursion,
+            max_downward_excursion=max_downward_excursion,
+            max_high=max_high,
+            min_low=min_low,
+            observation_status=ObservationStatus.AVAILABLE,
+            reason=(
+                f"Price excursion over {horizon_candles} candle(s): "
+                f"reference={reference_price}, max_high={max_high}, "
+                f"min_low={min_low}."
+            ),
+        )
 
 
 @runtime_checkable
@@ -155,9 +351,14 @@ class ForwardReturnProtocol(Protocol):
     Domain-facing contract for the fixed-horizon forward-return metric.
 
     A forward-return component consumes a :class:`SetupObservation`
-    (produced by the Checkpoint 9.5 observation engine) together with an
-    observation-time reference price and a horizon ``N``, and returns a
-    direction-neutral :class:`ForwardReturnObservation`.
+    (produced by the Checkpoint 9.5 observation engine) and a horizon
+    ``N``, and returns a direction-neutral
+    :class:`ForwardReturnObservation`.
+
+    The observation carries the observation-time reference price
+    (Checkpoint 9.7): the close of the latest completed setup candle
+    at/before ``T``. The forward-return component uses this anchor from
+    the observation — callers do NOT supply an arbitrary reference price.
 
     The contract guarantees:
 
@@ -166,12 +367,13 @@ class ForwardReturnProtocol(Protocol):
     * No trading or execution behavior is invoked.
     * No future-candle leakage: the endpoint candle is one of the
       already-observed future candles (all strictly after ``T``).
+    * The reference price is the observation-time anchor established by
+      Checkpoint 9.7 (point-in-time safe).
     """
 
     def observe_forward_return(
         self,
         observation: SetupObservation,
-        reference_price: float,
         horizon_candles: int,
     ) -> ForwardReturnObservation: ...
 
@@ -194,10 +396,14 @@ class ForwardReturnEngine:
     The metric is DIRECTION-NEUTRAL: it reports a historical price movement,
     not a win/loss, not a trade, not a classification.
 
-    The reference price is the observation-time price (the price ``at T``).
-    It is supplied explicitly by the caller and is not derived from any
-    candle slice — this keeps the metric free of data-slicing mechanics and
-    makes the reference point auditable.
+    OBSERVATION-TIME PRICE ANCHOR (Checkpoint 9.7):
+
+    The reference price is the observation-time price carried by the
+    observation (``observation.reference_price``). It is the close of the
+    latest completed setup candle at/before ``T`` — point-in-time safe
+    because the corpus setup slice only contains candles with
+    ``timestamp <= T``. The engine uses this anchor directly; callers do
+    NOT supply an arbitrary reference price.
 
     If fewer than ``horizon_candles`` future candles are available, the
     observation carries :attr:`ObservationStatus.INSUFFICIENT_DATA` and no
@@ -209,23 +415,27 @@ class ForwardReturnEngine:
     def observe_forward_return(
         self,
         observation: SetupObservation,
-        reference_price: float,
         horizon_candles: int,
     ) -> ForwardReturnObservation:
         """
         Compute the direction-neutral forward return for ``observation``.
 
-        The reference price is the observation-time price (price at ``T``),
-        supplied explicitly by the caller. The endpoint price is the close
-        of the Nth future candle. The horizon ``N`` must be positive.
+        The reference price is the observation-time price carried by the
+        observation (``observation.reference_price``), established by
+        Checkpoint 9.7 as the close of the latest completed setup candle
+        at/before ``T``. The endpoint price is the close of the Nth future
+        candle. The horizon ``N`` must be positive.
 
-        If ``horizon_candles`` is not positive, or fewer than
-        ``horizon_candles`` future candles are available, the result carries
+        If ``horizon_candles`` is not positive, fewer than
+        ``horizon_candles`` future candles are available, or the
+        observation carries no reference price, the result carries
         :attr:`ObservationStatus.INSUFFICIENT_DATA` and no return is
         computed.
 
         The candidate is retained by reference and never mutated.
         """
+
+        reference_price = observation.reference_price
 
         if horizon_candles < 1:
             return ForwardReturnObservation(
@@ -238,6 +448,20 @@ class ForwardReturnEngine:
                 reason=(
                     "Horizon must be a positive integer; got "
                     f"{horizon_candles}. No forward return computed."
+                ),
+            )
+
+        if reference_price is None:
+            return ForwardReturnObservation(
+                candidate=observation.candidate,
+                reference_price=reference_price,
+                horizon_candles=horizon_candles,
+                endpoint_price=None,
+                forward_return=None,
+                observation_status=ObservationStatus.INSUFFICIENT_DATA,
+                reason=(
+                    "The observation carries no reference price. "
+                    "No forward return computed."
                 ),
             )
 
