@@ -81,6 +81,9 @@ from engine.intelligence.performance_analytics import _compute_statistics
 from engine.intelligence.setup_confluence import SetupConfluenceEngine
 from engine.intelligence.trade_candidates import TradeCandidateEngine
 from engine.intelligence.trade_decision import TradeDecisionEngine
+from engine.models.historical_setup_research import (
+    HistoricalSetupResearchResult,
+)
 from engine.models.historical_availability import HistoricalDataAvailabilityResult
 from engine.models.historical_data import HistoricalDataRequest
 from engine.models.historical_evidence import EvidenceStrength
@@ -171,7 +174,7 @@ class HistoricalSetupResearchEngine:
         *,
         label: str = "",
         metadata: Iterable[tuple[str, str]] | None = None,
-    ) -> SetupResearchResult:
+    ) -> HistoricalSetupResearchResult:
         """
         Run the full historical setup research for ``request``.
 
