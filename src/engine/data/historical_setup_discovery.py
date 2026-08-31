@@ -44,6 +44,7 @@ from typing import Protocol, runtime_checkable
 
 from engine.models.historical_setup_discovery import (
     HistoricalSetupCandidate,
+    SetupCoverageReport,
     SetupDiscoveryResult,
 )
 from engine.models.market_context import MarketTrendState
@@ -252,4 +253,118 @@ class MinimalSetupDiscoveryEngine:
 __all__ = [
     "HistoricalSetupDiscoveryProtocol",
     "MinimalSetupDiscoveryEngine",
+    "measure_setup_coverage",
 ]
+
+
+def measure_setup_coverage(
+    points: Sequence[CorpusEvaluationPoint],
+    *,
+    instrument: str = "",
+) -> SetupCoverageReport:
+    """
+    Measure how many corpus evaluation points satisfy the directional-
+    structure setup criterion at each stage.
+
+    This is a RESEARCH-ONLY diagnostic. It consumes already-sliced
+    :class:`CorpusEvaluationPoint` objects and performs NO data
+    acquisition, NO candle slicing, NO future-data access and NO
+    trading logic.
+
+    Stages (in order):
+
+    1. ``total_points`` — every input point.
+    2. ``valid_points`` — points with a usable status.
+    3. ``points_with_setup_context`` — VALID points carrying a
+       reconstructed ``setup_context``.
+    4. ``points_with_directional_trend`` — points whose setup trend is
+       ``BULLISH`` or ``BEARISH``.
+    5. ``points_with_intact_structure`` — points with
+       ``structure_intact == True``.
+    6. ``points_with_sufficient_swings`` — points with
+       ``confirmed_swings >= 2``.
+    7. ``final_candidates`` — points satisfying ALL conditions.
+
+    The returned report also carries ``exclusion_reasons`` describing
+    why points failed the final stage.
+    """
+
+    total = len(points)
+    valid = 0
+    has_context = 0
+    directional = 0
+    intact = 0
+    sufficient_swings = 0
+    candidates = 0
+    exclusion_reasons: dict[str, int] = {}
+
+    for point in points:
+        if not point.status.is_usable:
+            continue
+        valid += 1
+
+        setup_ctx = (
+            point.state.setup_context
+            if point.state is not None
+            else None
+        )
+        if setup_ctx is None:
+            exclusion_reasons["no market structure"] = (
+                exclusion_reasons.get("no market structure", 0) + 1
+            )
+            continue
+        has_context += 1
+
+        trend_state = setup_ctx.trend.state
+        is_directional = trend_state in (
+            MarketTrendState.BULLISH,
+            MarketTrendState.BEARISH,
+        )
+        if not is_directional:
+            exclusion_reasons[
+                f"non-directional trend ({trend_state.value})"
+            ] = (
+                exclusion_reasons.get(
+                    f"non-directional trend ({trend_state.value})", 0
+                )
+                + 1
+            )
+            continue
+        directional += 1
+
+        if not setup_ctx.trend.structure_intact:
+            exclusion_reasons["structure broken"] = (
+                exclusion_reasons.get("structure broken", 0) + 1
+            )
+            continue
+        intact += 1
+
+        if setup_ctx.confirmed_swings < 2:
+            exclusion_reasons[
+                f"insufficient confirmed swings "
+                f"({setup_ctx.confirmed_swings})"
+            ] = (
+                exclusion_reasons.get(
+                    f"insufficient confirmed swings "
+                    f"({setup_ctx.confirmed_swings})",
+                    0,
+                )
+                + 1
+            )
+            continue
+        sufficient_swings += 1
+        candidates += 1
+
+    return SetupCoverageReport(
+        instrument=instrument or (points[0].instrument if points else ""),
+        total_points=total,
+        valid_points=valid,
+        points_with_setup_context=has_context,
+        points_with_directional_trend=directional,
+        points_with_intact_structure=intact,
+        points_with_sufficient_swings=sufficient_swings,
+        final_candidates=candidates,
+        exclusion_reasons=tuple(
+            sorted(exclusion_reasons.items())
+        ),
+    )

@@ -142,7 +142,85 @@ class SetupDiscoveryResult:
         return not self.candidates
 
 
+@dataclass(frozen=True, slots=True)
+class SetupCoverageReport:
+    """
+    Stage-by-stage coverage measurement for the historical setup
+    discovery criterion over a sequence of corpus evaluation points.
+
+    Each stage counts how many points survive that filter, so the
+    limiting condition is explicit. All counts are deterministic and
+    derived only from observation-time information.
+
+    Attributes:
+        instrument
+            Canonical instrument name (empty when the input is empty).
+        total_points
+            Total corpus evaluation points examined.
+        valid_points
+            Points whose status is usable (``VALID``).
+        points_with_setup_context
+            VALID points that carry a computed ``setup_context``.
+        points_with_directional_trend
+            Points whose setup trend is ``BULLISH`` or ``BEARISH``.
+        points_with_intact_structure
+            Points whose ``structure_intact`` flag is ``True``.
+        points_with_sufficient_swings
+            Points with ``confirmed_swings >= 2``.
+        final_candidates
+            Points satisfying ALL criterion conditions.
+        exclusion_reasons
+            Sorted tuple of ``(reason, count)`` pairs describing why
+            points were excluded at the final stage.
+    """
+
+    instrument: str = ""
+    total_points: int = 0
+    valid_points: int = 0
+    points_with_setup_context: int = 0
+    points_with_directional_trend: int = 0
+    points_with_intact_structure: int = 0
+    points_with_sufficient_swings: int = 0
+    final_candidates: int = 0
+    exclusion_reasons: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in (
+            "total_points",
+            "valid_points",
+            "points_with_setup_context",
+            "points_with_directional_trend",
+            "points_with_intact_structure",
+            "points_with_sufficient_swings",
+            "final_candidates",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative.")
+        if self.final_candidates > self.valid_points:
+            raise ValueError(
+                "final_candidates cannot exceed valid_points."
+            )
+        if self.final_candidates > self.points_with_sufficient_swings:
+            raise ValueError(
+                "final_candidates cannot exceed "
+                "points_with_sufficient_swings."
+            )
+
+    @property
+    def candidate_percentage(self) -> float | None:
+        """Percentage of VALID points that are final candidates."""
+        if self.valid_points == 0:
+            return None
+        return (self.final_candidates / self.valid_points) * 100.0
+
+    @property
+    def is_empty(self) -> bool:
+        """True when no corpus points were examined."""
+        return self.total_points == 0
+
+
 __all__ = [
     "HistoricalSetupCandidate",
+    "SetupCoverageReport",
     "SetupDiscoveryResult",
 ]

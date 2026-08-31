@@ -19,10 +19,16 @@ import pytest
 from engine.data.historical_setup_discovery import (
     HistoricalSetupDiscoveryProtocol,
     MinimalSetupDiscoveryEngine,
+    measure_setup_coverage,
 )
-from engine.models.historical_data import HistoricalDataError, HistoricalDataIssue
+from engine.models.historical_data import (
+    HistoricalDataError,
+    HistoricalDataIssue,
+    HistoricalDataRequest,
+)
 from engine.models.historical_setup_discovery import (
     HistoricalSetupCandidate,
+    SetupCoverageReport,
     SetupDiscoveryResult,
 )
 from engine.models.market_context import (
@@ -917,3 +923,421 @@ class TestSetupCriterion:
 
         assert r1.candidates[0] == r2.candidates[0]
         assert r1.candidates[0].reason == r2.candidates[0].reason
+
+
+class TestSetupCoverage:
+    """Coverage measurement for the directional-structure criterion."""
+
+    def test_empty_points_produces_empty_report(self) -> None:
+        report = measure_setup_coverage([])
+        assert report.is_empty
+        assert report.total_points == 0
+        assert report.final_candidates == 0
+        assert report.candidate_percentage is None
+
+    def test_stage_counts_single_candidate(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        report = measure_setup_coverage([point])
+
+        assert report.total_points == 1
+        assert report.valid_points == 1
+        assert report.points_with_setup_context == 1
+        assert report.points_with_directional_trend == 1
+        assert report.points_with_intact_structure == 1
+        assert report.points_with_sufficient_swings == 1
+        assert report.final_candidates == 1
+        assert report.candidate_percentage == 100.0
+
+    def test_stage_counts_reject_each_condition(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+
+        skipped = _skipped_point(ts, CorpusPointStatus.MISSING_DATA)
+        no_ctx = _valid_point(
+            ts, candles, has_structure=False, confirmed_swings=0
+        )
+        range_pt = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=HistoricalMarketState(
+                instrument="NIFTY",
+                evaluation_time=ts,
+                setup_timeframe="15m",
+                context_timeframe="1D",
+                setup_slice=_slice(candles, ts, inclusive=True),
+                context_slice=_slice([], ts, inclusive=False),
+                setup_context=MarketContext(
+                    index=0,
+                    trend=MarketTrend(
+                        state=MarketTrendState.RANGE,
+                        bias=StructureBias.NEUTRAL,
+                        structure_intact=True,
+                    ),
+                    range=RangeContext(
+                        state=RangeState.NOT_IN_RANGE,
+                        high=None,
+                        low=None,
+                        width=None,
+                        position=None,
+                        reason="directional",
+                    ),
+                    support_resistance=SupportResistanceContext(
+                        support=None,
+                        resistance=None,
+                        distance_to_support=None,
+                        distance_to_resistance=None,
+                        location=PriceLocation.UNKNOWN,
+                    ),
+                    confirmed_swings=2,
+                ),
+                context_context=None,
+                mtf_alignment="UNKNOWN",
+                latest_usable_setup_timestamp=candles[-1].timestamp,
+                latest_usable_context_timestamp=None,
+                structure_unavailable_reasons=(),
+            ),
+            history_count=len(candles),
+            reason="",
+        )
+        broken_pt = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=HistoricalMarketState(
+                instrument="NIFTY",
+                evaluation_time=ts,
+                setup_timeframe="15m",
+                context_timeframe="1D",
+                setup_slice=_slice(candles, ts, inclusive=True),
+                context_slice=_slice([], ts, inclusive=False),
+                setup_context=MarketContext(
+                    index=0,
+                    trend=MarketTrend(
+                        state=MarketTrendState.BULLISH,
+                        bias=StructureBias.BULLISH,
+                        structure_intact=False,
+                    ),
+                    range=RangeContext(
+                        state=RangeState.NOT_IN_RANGE,
+                        high=None,
+                        low=None,
+                        width=None,
+                        position=None,
+                        reason="directional",
+                    ),
+                    support_resistance=SupportResistanceContext(
+                        support=None,
+                        resistance=None,
+                        distance_to_support=None,
+                        distance_to_resistance=None,
+                        location=PriceLocation.UNKNOWN,
+                    ),
+                    confirmed_swings=2,
+                ),
+                context_context=None,
+                mtf_alignment="UNKNOWN",
+                latest_usable_setup_timestamp=candles[-1].timestamp,
+                latest_usable_context_timestamp=None,
+                structure_unavailable_reasons=(),
+            ),
+            history_count=len(candles),
+            reason="",
+        )
+        low_swing = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=1
+        )
+
+        report = measure_setup_coverage(
+            [skipped, no_ctx, range_pt, broken_pt, low_swing]
+        )
+
+        assert report.total_points == 5
+        assert report.valid_points == 4
+        assert report.points_with_setup_context == 3
+        assert report.points_with_directional_trend == 2
+        assert report.points_with_intact_structure == 1
+        assert report.points_with_sufficient_swings == 0
+        assert report.final_candidates == 0
+
+    def test_exclusion_reasons_breakdown(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+
+        no_ctx = _valid_point(
+            ts, candles, has_structure=False, confirmed_swings=0
+        )
+        range_pt = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=HistoricalMarketState(
+                instrument="NIFTY",
+                evaluation_time=ts,
+                setup_timeframe="15m",
+                context_timeframe="1D",
+                setup_slice=_slice(candles, ts, inclusive=True),
+                context_slice=_slice([], ts, inclusive=False),
+                setup_context=MarketContext(
+                    index=0,
+                    trend=MarketTrend(
+                        state=MarketTrendState.RANGE,
+                        bias=StructureBias.NEUTRAL,
+                        structure_intact=True,
+                    ),
+                    range=RangeContext(
+                        state=RangeState.NOT_IN_RANGE,
+                        high=None,
+                        low=None,
+                        width=None,
+                        position=None,
+                        reason="directional",
+                    ),
+                    support_resistance=SupportResistanceContext(
+                        support=None,
+                        resistance=None,
+                        distance_to_support=None,
+                        distance_to_resistance=None,
+                        location=PriceLocation.UNKNOWN,
+                    ),
+                    confirmed_swings=2,
+                ),
+                context_context=None,
+                mtf_alignment="UNKNOWN",
+                latest_usable_setup_timestamp=candles[-1].timestamp,
+                latest_usable_context_timestamp=None,
+                structure_unavailable_reasons=(),
+            ),
+            history_count=len(candles),
+            reason="",
+        )
+        broken_pt = CorpusEvaluationPoint(
+            instrument="NIFTY",
+            evaluation_time=ts,
+            setup_timeframe="15m",
+            context_timeframe="1D",
+            status=CorpusPointStatus.VALID,
+            state=HistoricalMarketState(
+                instrument="NIFTY",
+                evaluation_time=ts,
+                setup_timeframe="15m",
+                context_timeframe="1D",
+                setup_slice=_slice(candles, ts, inclusive=True),
+                context_slice=_slice([], ts, inclusive=False),
+                setup_context=MarketContext(
+                    index=0,
+                    trend=MarketTrend(
+                        state=MarketTrendState.BULLISH,
+                        bias=StructureBias.BULLISH,
+                        structure_intact=False,
+                    ),
+                    range=RangeContext(
+                        state=RangeState.NOT_IN_RANGE,
+                        high=None,
+                        low=None,
+                        width=None,
+                        position=None,
+                        reason="directional",
+                    ),
+                    support_resistance=SupportResistanceContext(
+                        support=None,
+                        resistance=None,
+                        distance_to_support=None,
+                        distance_to_resistance=None,
+                        location=PriceLocation.UNKNOWN,
+                    ),
+                    confirmed_swings=2,
+                ),
+                context_context=None,
+                mtf_alignment="UNKNOWN",
+                latest_usable_setup_timestamp=candles[-1].timestamp,
+                latest_usable_context_timestamp=None,
+                structure_unavailable_reasons=(),
+            ),
+            history_count=len(candles),
+            reason="",
+        )
+        low_swing = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=1
+        )
+
+        report = measure_setup_coverage(
+            [no_ctx, range_pt, broken_pt, low_swing]
+        )
+
+        reason_map = dict(report.exclusion_reasons)
+        assert reason_map["no market structure"] == 1
+        assert reason_map["non-directional trend (RANGE)"] == 1
+        assert reason_map["structure broken"] == 1
+        assert (
+            reason_map["insufficient confirmed swings (1)"] == 1
+        )
+
+    def test_coverage_matches_discovery_engine(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        points = [
+            _valid_point(ts, candles, has_structure=True, confirmed_swings=2),
+            _valid_point(ts, candles, has_structure=True, confirmed_swings=1),
+            _valid_point(ts, candles, has_structure=False),
+            _skipped_point(ts, CorpusPointStatus.MISSING_DATA),
+        ]
+
+        engine = MinimalSetupDiscoveryEngine()
+        result = engine.discover(points)
+        report = measure_setup_coverage(points)
+
+        assert result.total_evaluated == report.total_points
+        assert result.candidate_count == report.final_candidates
+        assert report.valid_points == 3
+        assert report.points_with_setup_context == 2
+
+    def test_deterministic_repeated_measurement(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        points = [
+            _valid_point(ts, candles, has_structure=True, confirmed_swings=2),
+            _valid_point(ts, candles, has_structure=True, confirmed_swings=1),
+            _skipped_point(ts, CorpusPointStatus.INSUFFICIENT_HISTORY),
+        ]
+
+        r1 = measure_setup_coverage(points)
+        r2 = measure_setup_coverage(points)
+
+        assert r1 == r2
+        assert r1.exclusion_reasons == r2.exclusion_reasons
+
+    def test_no_future_data_accessed(self) -> None:
+        ts = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        candles = [_candle(ts, 100.0)]
+        point = _valid_point(
+            ts, candles, has_structure=True, confirmed_swings=2
+        )
+
+        report = measure_setup_coverage([point])
+
+        assert report.final_candidates == 1
+        assert not hasattr(report, "future_candles")
+        assert not hasattr(report, "outcome")
+
+    def test_fixture_derived_corpus_coverage_reported(self) -> None:
+        from engine.data.historical_fixtures import historical_candles_by_instrument
+
+        fixture_candles = historical_candles_by_instrument()
+        points: list[CorpusEvaluationPoint] = []
+
+        for instrument in ("NIFTY", "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK"):
+            setup_candles = fixture_candles[instrument]["15M"]
+            context_candles = fixture_candles[instrument]["1D"]
+
+            for idx, setup_candle in enumerate(setup_candles):
+                evaluation_time = setup_candle.timestamp
+                setup_slice = CorpusTimeframeSlice(
+                    instrument=instrument,
+                    timeframe="15M",
+                    candles=tuple(setup_candles[: idx + 1]),
+                    evaluation_time=evaluation_time,
+                    boundary_inclusive=True,
+                    first_timestamp=setup_candles[0].timestamp,
+                    last_timestamp=setup_candle.timestamp,
+                    count=idx + 1,
+                    source_count=len(setup_candles),
+                    quality=_quality(
+                        source_count=len(setup_candles),
+                        window_count=idx + 1,
+                        first=setup_candles[0].timestamp,
+                        last=setup_candle.timestamp,
+                    ),
+                )
+                context_slice = CorpusTimeframeSlice(
+                    instrument=instrument,
+                    timeframe="1D",
+                    candles=tuple(
+                        c
+                        for c in context_candles
+                        if c.timestamp < evaluation_time
+                    ),
+                    evaluation_time=evaluation_time,
+                    boundary_inclusive=False,
+                    first_timestamp=context_candles[0].timestamp
+                    if context_candles
+                    else None,
+                    last_timestamp=context_candles[-1].timestamp
+                    if context_candles
+                    else None,
+                    count=sum(
+                        1 for c in context_candles if c.timestamp < evaluation_time
+                    ),
+                    source_count=len(context_candles),
+                    quality=_quality(
+                        source_count=len(context_candles),
+                        window_count=sum(
+                            1 for c in context_candles if c.timestamp < evaluation_time
+                        ),
+                        first=context_candles[0].timestamp if context_candles else None,
+                        last=context_candles[-1].timestamp if context_candles else None,
+                    ),
+                )
+
+                has_context = len(context_candles) >= 2
+                has_structure = idx >= 2
+
+                if not has_context or not has_structure:
+                    status = CorpusPointStatus.INSUFFICIENT_HISTORY
+                    state = None
+                else:
+                    status = CorpusPointStatus.VALID
+                    state = HistoricalMarketState(
+                        instrument=instrument,
+                        evaluation_time=evaluation_time,
+                        setup_timeframe="15M",
+                        context_timeframe="1D",
+                        setup_slice=setup_slice,
+                        context_slice=context_slice,
+                        setup_context=_market_context(
+                            confirmed_swings=max(0, idx - 1),
+                        ),
+                        context_context=None,
+                        mtf_alignment="UNKNOWN",
+                        latest_usable_setup_timestamp=setup_candle.timestamp,
+                        latest_usable_context_timestamp=context_candles[-1].timestamp
+                        if context_candles
+                        else None,
+                        structure_unavailable_reasons=(),
+                    )
+
+                points.append(
+                    CorpusEvaluationPoint(
+                        instrument=instrument,
+                        evaluation_time=evaluation_time,
+                        setup_timeframe="15M",
+                        context_timeframe="1D",
+                        status=status,
+                        state=state,
+                        history_count=idx + 1,
+                        reason="",
+                    )
+                )
+
+        report = measure_setup_coverage(
+            points, instrument="fixture-5-instruments",
+        )
+        assert report.total_points == len(points)
+        assert report.final_candidates == sum(
+            1 for p in points
+            if MinimalSetupDiscoveryEngine().discover([p]).candidates[0].is_candidate
+        )
+        assert report.candidate_percentage is not None
+        assert report.candidate_percentage >= 0.0
+        assert report.candidate_percentage <= 100.0
