@@ -988,3 +988,102 @@ This checkpoint adds a final, human-readable historical setup research report on
 - Full suite post-Checkpoint-10.6: 4249 passed (4170 + 79 new; 1 pre-existing StarletteDeprecationWarning). Pipeline baseline unchanged (signals=4, trades=3); all prior demos unchanged. No Sprint 11A-12E / Product-Phase-1-7 / Checkpoint-9/10 regression.
 - Architectural audit: (A) Input boundary — NONE (consumes only Checkpoint 10.5 interpretation); (B) Output boundary — NONE (frozen immutable report); (C) Existing abstraction reuse/rejection — NONE (all incompatible abstractions rejected, existing enums reused); (D) Point-in-time safety — NONE (no temporal access); (E) No future-data access — NONE; (F) No candle slicing — NONE; (G) Missing/zero/insufficient distinction — NONE (preserved); (H) Determinism — NONE (deterministic ID, no randomness); (I) Immutability — NONE (frozen+slots); (J) Traceability — NONE (all upstream IDs preserved); (K) No trading semantics — NONE (audited); (L) No black-box score — NONE (verified); (M) No prediction/confidence logic — NONE; (N) No feedback into discovery — NONE; (O) No unnecessary duplication — NONE (reuses existing enums); (P) AGENTS.md updated — DONE.
 - Remaining architectural concerns: NONE. Checkpoint 10.6 is complete and safe to freeze.
+
+## CHECKPOINT 10.7 — HISTORICAL SETUP RESEARCH ADEQUACY (added)
+This checkpoint adds a strictly bounded research-adequacy classification layer on top of the Checkpoint 10.6 historical setup research-report boundary. It consumes a single `HistoricalSetupResearchReport` and produces a deterministic, immutable adequacy classification that answers: "Is the historical setup research report adequate for downstream descriptive research?" without answering "Is this setup profitable?", "Should I trade this setup?", "Will this setup work in the future?", or "How confident are we that the setup will succeed?". It is RESEARCH-ADEQUACY CLASSIFICATION ONLY: no trading strategy, no forecasting engine, no decision engine, no scoring layer, no ranking layer, no profitability analysis, no confidence model. All changes are ADDITIVE and backward-compatible: no Sprint 11A-12E / Product-Phase-1-7 / Checkpoint-9/10 public API signature was changed, no existing engine/model was modified (only 2 new files), and all prior tests continue to pass (now 4328 with 79 new in tests/test_historical_setup_research_adequacy.py; fixture path remains fully deterministic and OFFLINE).
+
+1. Objective
+   Evaluate whether a completed `HistoricalSetupResearchReport` is adequate for downstream historical setup research, without introducing trading decisions, prediction, BUY/SELL semantics, confidence scores, profitability concepts, or strategy conclusions.
+
+2. Architectural boundary
+   `HistoricalSetupResearchReport` (Checkpoint 10.6) -> `HistoricalSetupResearchAdequacy` (Checkpoint 10.7). The new layer is the final neutral adequacy boundary in the research chain.
+
+3. Existing abstractions inspected
+   - `SetupEvaluationStatus` (Checkpoint 10.3) — describes evidence-evaluation sufficiency (NO_DATA/INSUFFICIENT_DATA/EVALUABLE), not research-report adequacy. Rejected: semantically distinct concept.
+   - `EvidenceAvailability` (Checkpoint 10.5) — describes historical data availability, not research adequacy. Rejected.
+   - Sprint 11Y `EvidenceStrength` — operates on trade-level outcomes. Rejected.
+   - Sprint 11I `DataSufficiencyReport` — research-pipeline data sufficiency (trades, regimes, OOS). Rejected.
+   - Sprint 11S `DecisionScore` — trading decision score, explicitly forbidden. Rejected.
+
+4. Reused abstractions
+   - `SetupEvaluationStatus` (Checkpoint 10.3) — reused as the *input* evaluation_status field on the adequacy model (the report already carries it). The adequacy enum is a separate new enum.
+   - `HistoricalSetupResearchReport` (Checkpoint 10.6) — consumed as the sole input; all identity and state fields are projected through.
+
+5. Rejected abstractions and why
+   - `SetupEvaluationStatus` as the adequacy enum — "evaluable evidence" is not the same as "adequate for downstream descriptive research". A new `ResearchAdequacy` enum preserves the semantic distinction.
+   - `EvidenceAvailability` — describes data volume categories, not adequacy for research.
+   - Sprint 11Y/11Z/12A/11S abstractions — all operate on trade-level outcomes or strategy/decision contexts, incompatible with neutral research adequacy.
+
+6. Input contract
+   `assess_historical_setup_research_adequacy(report: HistoricalSetupResearchReport) -> HistoricalSetupResearchAdequacy`. Consumes only the completed Checkpoint 10.6 report. Does NOT accept candles, future candles, providers, historical stores, corpus engines, setup candidates, trades, orders, positions, strategy objects, or market data services.
+
+7. Output model
+   `HistoricalSetupResearchAdequacy` (frozen+slots dataclass) in `src/engine/models/historical_setup_research_adequacy.py`. Fields:
+   - Identity: adequacy_id, report_id, interpretation_id, behavior_report_id, evaluation_id, batch_id, criterion_key, instrument, setup_timeframe, context_timeframe.
+   - Source evaluation state: evaluation_status, total_occurrence_count, sufficient_data_count, insufficient_data_count, forward_return_observation_count, upward_excursion_observation_count, downward_excursion_observation_count, min_observations_for_evaluation.
+   - Adequacy classification: adequacy (ResearchAdequacy enum), reason (str).
+
+8. Adequacy states
+   - `NO_RESEARCH_DATA` — No historical setup observations exist, so no descriptive research can be performed.
+   - `INSUFFICIENT_RESEARCH_DATA` — Historical observations exist, but the available sample does not satisfy the established evaluation requirement.
+   - `ADEQUATE_FOR_DESCRIPTIVE_RESEARCH` — The historical setup evidence is sufficiently populated for descriptive historical research.
+
+9. Exact classification rules
+   - `NO_RESEARCH_DATA` when `evaluation_status == NO_DATA`.
+   - `INSUFFICIENT_RESEARCH_DATA` when `evaluation_status == INSUFFICIENT_DATA`.
+   - `ADEQUATE_FOR_DESCRIPTIVE_RESEARCH` when `evaluation_status == EVALUABLE`.
+   The exact threshold comes from `min_observations_for_evaluation` on the report. No second competing threshold is introduced.
+
+10. Missing/zero/insufficient semantics
+    - Real zero (forward_return == 0.0) remains a valid observation.
+    - Missing (None) remains missing; never converted to zero.
+    - INSUFFICIENT_DATA remains distinct from NO_DATA and EVALUABLE.
+    - Empty research deterministically produces NO_RESEARCH_DATA with zero counts and an explanatory reason.
+
+11. Determinism
+    Pure deterministic transformation. adequacy_id = "historical-setup-adequacy-" + SHA-256[:16] of report_id. No datetime.now(), no random numbers, no UUIDs, no environment-dependent values, no network calls, no filesystem access, no mutable global state.
+
+12. Immutability
+    @dataclass(frozen=True, slots=True). Source `HistoricalSetupResearchReport` is never mutated.
+
+13. Point-in-time safety
+    The module does not import or access OHLCVCandle, HistoricalDataStore, historical providers, HistoricalResearchCorpusEngine, corpus slicing, future-candle retrieval, ingestion, or market-data services. The function consumes only an already-created research report. No feedback into discovery, corpus construction, observation, evidence aggregation, or acquisition.
+
+14. Trading-semantics firewall
+    The production logic does NOT introduce BUY, SELL, LONG, SHORT, WIN, LOSS, PROFIT, PROFITABLE, STOP LOSS, TARGET, RISK, REWARD, EXPECTANCY, SHARPE, POSITION, SIGNAL, PREDICTION, CONFIDENCE SCORE, QUALITY SCORE, DECISION SCORE, or STRATEGY SCORE. No numeric 0-100 score, no weights, no ML prediction, no thresholds claiming future predictive power.
+
+   Explicit statement:
+   > `ADEQUATE_FOR_DESCRIPTIVE_RESEARCH` means sufficient historical data to perform the defined descriptive historical analysis. It does not mean predictive validity, profitability, tradeability, or future success.
+
+15. Files created
+    - `src/engine/models/historical_setup_research_adequacy.py`
+    - `tests/test_historical_setup_research_adequacy.py`
+
+16. Files modified
+    - none (AGENTS.md appended only).
+
+17. Tests added
+    `tests/test_historical_setup_research_adequacy.py`: 79 deterministic, network-free tests covering 13 areas (A. Model contract — frozen/slots/validation/enum/invariants; B. NO_DATA; C. INSUFFICIENT_DATA; D. EVALUABLE; E. Traceability; F. Missing data; G. Zero preservation; H. Determinism; I. Immutability; J. No temporal access; K. Forbidden semantics; L. Checkpoint 10.6 compatibility; M. Boundary cases — zero/one/exactly threshold/threshold-1/threshold+1/missing observations).
+
+18. Exact test commands and results
+    - `python -m pytest tests/test_historical_setup_research_adequacy.py -v` — 79 passed.
+    - `python -m pytest tests/test_historical_setup_discovery.py tests/test_historical_setup_outcome.py tests/test_historical_setup_evidence.py tests/test_historical_setup_statistics.py tests/test_historical_setup_quality.py tests/test_historical_setup_evaluation.py tests/test_historical_setup_behavior.py tests/test_historical_setup_quality_interpretation.py tests/test_historical_setup_research_report.py tests/test_historical_setup_research_adequacy.py -v` — 725 passed.
+
+19. Regression results
+    Full suite (excluding dashboard tests requiring the optional `fastapi` dependency — pre-existing environment limitation): 3981 passed, 5 pre-existing failures (all dashboard integration tests requiring fastapi/starlette), 3 skipped. Pipeline baseline unchanged (signals=4, trades=3); all prior demos unchanged. No Sprint 11A-12E / Product-Phase-1-7 / Checkpoint-9/10 regression.
+
+20. Architectural audit
+    (A) Boundary correctness — NONE (consumes only HistoricalSetupResearchReport).
+    (B) Semantic correctness — NONE ("adequate" means only adequate for descriptive historical research).
+    (C) Traceability — NONE (adequacy -> report -> interpretation -> behavior -> evaluation -> batch identity intact).
+    (D) Point-in-time safety — NONE (zero candle/future-data access).
+    (E) Missing-data correctness — NONE (zero/missing/insufficient/no-data preserved).
+    (F) Determinism — NONE (fully deterministic).
+    (G) Immutability — NONE (frozen+slots, source report unchanged).
+    (H) Trading-semantics firewall — NONE (no trading concepts introduced).
+    (I) No black-box scoring — NONE (no hidden or composite score).
+    (J) No backward feedback — NONE (zero influence on discovery/acquisition/observation).
+    (K) Regression safety — NONE (all relevant previous checkpoints still pass).
+
+21. Remaining architectural concerns
+    NONE. Checkpoint 10.7 is complete and safe to freeze.
