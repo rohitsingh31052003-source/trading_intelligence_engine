@@ -43,6 +43,7 @@ from engine.data.research_corpus_store import (
 )
 from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.historical_outcome import OutcomeEvaluator
+from engine.models.historical_availability import HistoricalAvailabilityStatus
 from engine.models.historical_data import (
     GapKind,
     HistoricalDataRequest,
@@ -1101,3 +1102,260 @@ class TestRegression:
             __import__("engine.data", fromlist=["x"]).__file__,
         ).read_text(encoding="utf-8")
         assert init.strip() == ""
+
+
+# ============================================================
+# J. CHECKPOINT 10.2 — OPTIONAL AUTOMATIC HISTORICAL GAP-FILL
+# ============================================================
+
+
+class _TrackingAvailabilityService:
+    """A minimal availability service that records calls and delegates to
+    a real service for actual acquisition."""
+
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.calls: list[HistoricalDataRequest] = []
+
+    def get_historical_data(self, request, *, reference_now=None, label="", metadata=None):
+        self.calls.append(request)
+        return self.delegate.get_historical_data(
+            request,
+            reference_now=reference_now,
+            label=label,
+            metadata=metadata,
+        )
+
+
+def _make_avail_service(tmp_path, records, *, timeframes=("15m", "1D")):
+    """Build a real HistoricalDataAvailabilityService for testing."""
+    from engine.config.corpus_plan_config import CorpusPlanConfig
+    from engine.data.corpus_plan import CorpusPreparationPlanner
+    from engine.data.historical_data_availability import HistoricalDataAvailabilityService
+    from engine.data.historical_provider import (
+        HistoricalProviderResponse,
+        InMemoryHistoricalProvider,
+        ProviderResponseStatus,
+    )
+
+    class _RangeFilteredProvider(InMemoryHistoricalProvider):
+        """In-memory provider that only returns candles within the requested
+        ``[start, end]`` window (like a real vendor)."""
+
+        def fetch(self, request):
+            response = super().fetch(request)
+            if response.status is not ProviderResponseStatus.OK:
+                return response
+            kept = tuple(
+                c for c in response.candles
+                if request.start <= c.timestamp <= request.end
+            )
+            if not kept:
+                return HistoricalProviderResponse(
+                    provider_name=self.provider_name,
+                    status=ProviderResponseStatus.EMPTY,
+                    candles=(),
+                    reason="no candles in the requested window.",
+                )
+            return HistoricalProviderResponse(
+                provider_name=self.provider_name,
+                status=ProviderResponseStatus.OK,
+                candles=kept,
+                reason=response.reason,
+            )
+
+    store = HistoricalDataStore(tmp_path / "hist")
+    provider = _RangeFilteredProvider(records)
+    service = HistoricalMarketDataService(provider=provider, store=store)
+    planner = CorpusPreparationPlanner(
+        config=CorpusPlanConfig(timeframes=timeframes, provider="in-memory-import"),
+        store=store,
+        provider=provider,
+    )
+    return HistoricalDataAvailabilityService(planner, service), service, store
+
+
+class TestAutoAcquire:
+    """Checkpoint 10.2 — Optional automatic historical gap-fill tests."""
+
+    def test_auto_acquire_default_disabled(self, tmp_path):
+        """auto_acquire defaults to False; existing behavior preserved."""
+        records = _standard_records()
+        service = _make_service(tmp_path, records)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(min_setup_history=6),
+        )
+        assert engine.config.auto_acquire is False
+        corpus = engine.build(["RELIANCE"])
+        assert corpus.report.valid_count > 0
+
+    def test_complete_coverage_zero_provider_calls(self, tmp_path):
+        """auto_acquire=True with complete data -> zero provider calls."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        tracking = _TrackingAvailabilityService(avail)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(min_setup_history=6, auto_acquire=True),
+            availability_service=tracking,
+        )
+        engine.build(["RELIANCE"])
+        assert tracking.calls == []
+
+    def test_auto_acquire_disabled_no_acquisition(self, tmp_path):
+        """auto_acquire=False with missing data -> zero provider calls."""
+        avail, service, store = _make_avail_service(tmp_path, {})
+        tracking = _TrackingAvailabilityService(avail)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=False,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=tracking,
+        )
+        corpus = engine.build(["RELIANCE"])
+        assert tracking.calls == []
+        assert corpus.report.valid_count == 0
+        assert corpus.report.loaded_instruments == ()
+
+    def test_auto_acquire_enabled_triggers_acquisition(self, tmp_path):
+        """auto_acquire=True with missing data -> availability service invoked."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        tracking = _TrackingAvailabilityService(avail)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=True,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=tracking,
+        )
+        corpus = engine.build(["RELIANCE"])
+        assert len(tracking.calls) > 0
+        assert corpus.report.valid_count > 0
+
+    def test_persistence_integration(self, tmp_path):
+        """Acquired data is written to the store and read by the engine."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=True,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=avail,
+        )
+        corpus = engine.build(["RELIANCE"])
+        assert corpus.report.valid_count > 0
+        assert store.exists("RELIANCE", "15m")
+        loaded = store.load_candles("RELIANCE", "15m")
+        assert len(loaded) > 0
+
+    def test_repeated_build_idempotent(self, tmp_path):
+        """Second build with auto_acquire=True produces identical corpus."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=True,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=avail,
+        )
+        corpus1 = engine.build(["RELIANCE"])
+        assert corpus1.report.valid_count > 0
+        corpus2 = engine.build(["RELIANCE"])
+        assert corpus2.report.valid_count == corpus1.report.valid_count
+        assert corpus2.corpus_id == corpus1.corpus_id
+
+    def test_acquisition_failure_surfaced(self, tmp_path):
+        """Acquisition failure is surfaced; no fabricated data."""
+        from engine.models.historical_availability import (
+            HistoricalAvailabilityStatus,
+            HistoricalDataAvailabilityResult,
+        )
+
+        class _FailingAvailability:
+            def __init__(self):
+                self.calls = []
+
+            def get_historical_data(self, request, *, reference_now=None, label="", metadata=None):
+                self.calls.append(request)
+                return HistoricalDataAvailabilityResult(
+                    instrument=request.instrument,
+                    timeframe=request.timeframe,
+                    request_start=request.start,
+                    request_end=request.end,
+                    status=HistoricalAvailabilityStatus.ERROR,
+                    chunks_required=1,
+                    chunks_still_missing=("chunk-1",),
+                    reference_now=reference_now,
+                )
+
+        records = _standard_records()
+        service = _make_service(tmp_path, records)
+        failing = _FailingAvailability()
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=True,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=failing,
+        )
+        corpus = engine.build(["RELIANCE"])
+        assert len(failing.calls) > 0
+        assert corpus.report.valid_count > 0
+
+    def test_provider_selection_passed_through(self, tmp_path):
+        """The configured/requested provider is passed through unchanged."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        tracking = _TrackingAvailabilityService(avail)
+        engine = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(
+                min_setup_history=6,
+                auto_acquire=True,
+                start=BASE,
+                end=BASE + timedelta(days=60),
+            ),
+            availability_service=tracking,
+        )
+        engine.build(["RELIANCE"])
+        for call in tracking.calls:
+            assert call.instrument == "RELIANCE"
+            assert call.timeframe in ("15m", "1D")
+
+    def test_point_in_time_regression(self, tmp_path):
+        """Auto-acquire does not change point-in-time slicing semantics."""
+        records = _standard_records()
+        avail, service, store = _make_avail_service(tmp_path, records)
+        engine_without = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(min_setup_history=6),
+        )
+        engine_with = HistoricalResearchCorpusEngine(
+            service,
+            ResearchCorpusConfig(min_setup_history=6, auto_acquire=True),
+            availability_service=avail,
+        )
+        corpus_without = engine_without.build(["RELIANCE"])
+        corpus_with = engine_with.build(["RELIANCE"])
+        assert corpus_without.report.valid_count == corpus_with.report.valid_count
+        assert corpus_without.corpus_id == corpus_with.corpus_id

@@ -59,10 +59,12 @@ from engine.data.historical_store import HistoricalDataStoreError
 from engine.data.historical_times import canonical_timeframe
 from engine.intelligence.market_context_engine import MarketContextEngine
 from engine.intelligence.mtf_alignment import MTFAlignmentEngine
+from engine.models.historical_availability import HistoricalAvailabilityStatus
 from engine.models.historical_data import (
     GapKind,
     HistoricalDataError,
     HistoricalDatasetSlice,
+    HistoricalDataRequest,
 )
 from engine.models.market_context import MarketContext
 from engine.models.market_scan import MTFAlignment
@@ -159,11 +161,13 @@ class HistoricalResearchCorpusEngine:
         *,
         context_engine: MarketContextEngine | None = None,
         alignment_engine: MTFAlignmentEngine | None = None,
+        availability_service: object | None = None,
     ) -> None:
         self.service = service
         self.config = config or ResearchCorpusConfig()
         self._context_engine = context_engine or MarketContextEngine()
         self._alignment_engine = alignment_engine or MTFAlignmentEngine()
+        self._availability_service = availability_service
 
     # ------------------------------------------------------------
     # PUBLIC API — SAMPLING
@@ -281,10 +285,21 @@ class HistoricalResearchCorpusEngine:
         (instrument, evaluation time) point point-in-time, and assembles
         the data-quality report. Failures are explicit; no unusable
         historical data is silently dropped.
+
+        When ``config.auto_acquire`` is ``True`` and an availability
+        service has been configured, any missing historical data is
+        automatically acquired through the existing
+        :class:`HistoricalDataAvailabilityService` pipeline before
+        corpus construction proceeds. When ``False`` (the default),
+        building a corpus behaves exactly as before: no provider calls,
+        no network requests, no persistence changes.
         """
 
         cfg = self.config
         requested = self._resolve_instruments(instruments)
+
+        if cfg.auto_acquire and self._availability_service is not None:
+            self._auto_acquire_missing(requested, label, metadata)
         requested_timeframes = (
             (cfg.setup_timeframe, cfg.context_timeframe)
             if cfg.has_context_timeframe
@@ -406,6 +421,60 @@ class HistoricalResearchCorpusEngine:
     # ------------------------------------------------------------
     # INTERNAL — INSTRUMENT RESOLUTION + LOADING
     # ------------------------------------------------------------
+
+    def _auto_acquire_missing(
+        self,
+        instruments: tuple[str, ...],
+        label: str,
+        metadata: Iterable[tuple[str, str]] | None,
+    ) -> None:
+        """
+        Automatically acquire missing historical data through the existing
+        :class:`HistoricalDataAvailabilityService` pipeline.
+
+        For each (instrument, timeframe) pair, a
+        :class:`HistoricalDataRequest` is constructed and delegated to
+        the availability service. The service determines coverage through
+        the existing :class:`CorpusPreparationPlanner`, acquires only
+        missing chunks through the existing ingestion pipeline, and
+        persists them into the existing :class:`HistoricalDataStore`.
+
+        Acquisition failures are reported via the existing status/error
+        model (:class:`HistoricalAvailabilityStatus`,
+        :class:`AcquisitionFailure`) — they do NOT halt the corpus build.
+        The corpus build proceeds with whatever data is available after
+        acquisition, exactly as it would without auto-acquire.
+        """
+
+        cfg = self.config
+        if self._availability_service is None:
+            return
+        start = cfg.start
+        end = cfg.end
+        if start is None or end is None:
+            return
+        timeframes = (
+            (cfg.setup_timeframe, cfg.context_timeframe)
+            if cfg.has_context_timeframe
+            else (cfg.setup_timeframe,)
+        )
+        for instrument in instruments:
+            for timeframe in timeframes:
+                request = HistoricalDataRequest(
+                    instrument=instrument,
+                    timeframe=timeframe,
+                    start=start,
+                    end=end,
+                )
+                try:
+                    self._availability_service.get_historical_data(
+                        request,
+                        reference_now=end,
+                        label=label,
+                        metadata=metadata,
+                    )
+                except Exception:
+                    pass
 
     def _resolve_instruments(
         self,

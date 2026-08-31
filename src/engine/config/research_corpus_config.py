@@ -76,6 +76,7 @@ class ResearchCorpusConfig:
     start: datetime | None = None
     end: datetime | None = None
     skip_gapped_points: bool = True
+    auto_acquire: bool = False
     label: str = ""
     metadata: tuple[tuple[str, str], ...] = ()
 
