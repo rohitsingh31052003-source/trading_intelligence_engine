@@ -1374,4 +1374,64 @@ python -m pytest tests/test_historical_data_foundation.py tests/test_historical_
 
 python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_live_data_integration.py --ignore=tests/test_trade_planning.py --ignore=tests/test_watchlist_scanner.py --ignore=tests/test_workstation.py --ignore=tests/test_yahoo_range_fix.py --ignore=tests/test_paper_trading.py --ignore=tests/test_paper_trading_operations.py --ignore=tests/test_run_paper_trading_cycle.py --ignore=tests/test_live_paper_validation.py -q
 → 3981 passed, 5 failed (pre-existing fastapi module not found), 3 skipped
-```
+
+## CHECKPOINT 13.3 — EXECUTION AUTHORIZATION BOUNDARY AUDIT & DESIGN (added)
+
+- Scope: AUDIT + CONTRACT DESIGN ONLY. Determine what "authorization to execute" must mean before any Operational Trade Intent may proceed toward a future execution subsystem. No implementation changes.
+- Design principles:
+  - No authorization layer currently exists and no execution path exists.
+  - READY_FOR_REVIEW ≠ AUTHORIZED (presentation mirror, not authorization).
+  - RiskPlanStatus.VALID ≠ AUTHORIZED (risk-calculation status, not authorization).
+  - PaperTrade ≠ AUTHORIZED (simulation artifact, not authorization).
+  - Authorization must bind to a specific Operational Trade Intent using intent_id plus content fingerprint.
+  - Authorization should be immutable, time-bounded, broker-neutral.
+  - Authorization should fail closed (unknown state → NOT AUTHORIZED).
+  - Recommended authority model: policy eligibility + explicit human authorization.
+  - Recommended lifecycle: UNAUTHORIZED → ELIGIBLE → AUTHORIZED → EXPIRED/REVOKED/SUPERSEDED.
+- Tests: `tests/test_trade_planning.py` + `tests/test_paper_trading.py` + `tests/test_paper_trading_operations.py` + `tests/test_dashboard.py` + `tests/test_workstation.py` + `tests/test_watchlist_scanner.py` — 618 passed.
+- Full suite post-Checkpoint-13.3: 4849 passed, 2 pre-existing yfinance-related failures, 3 skipped.
+- Architectural audit: (A) No authorization layer exists — defined conceptually only; (B) No execution path exists; (C) No automatic bypass paths found; (D) Frozen boundaries intact.
+- Remaining architectural concerns: No authorization layer, no mode system, no emergency stop, no account/portfolio layer, no broker adapter, no human approval UI.
+- Audit document: `docs/checkpoint_13_3_execution_authorization_boundary_audit.md`
+- Verdict: PASS
+
+## CHECKPOINT 13.4 — EXECUTION AUTHORIZATION → EXECUTION COMMAND BOUNDARY AUDIT & DESIGN (added)
+
+- Scope: AUDIT + CONTRACT DESIGN ONLY. Determine what exact information is permitted to cross the boundary from Execution Authorization to a future Execution Command layer, and what transformations are prohibited. No implementation changes.
+- Key conclusions:
+  - No ExecutionCommand or BrokerAdapter implementation currently exists.
+  - The future Execution Command should consume a dedicated authorized-intent snapshot, remain broker-neutral, bind to intent_id, authorization_id and content fingerprint, fail closed on authorization mismatch, and prohibit material changes without re-authorization.
+  - Broker-specific translation belongs downstream.
+  - Execution Command must remain broker-neutral: it expresses the intent to buy/sell a quantity of an instrument at a price, without knowing which broker, exchange, or routing will be used.
+  - The conceptual pre-submission lifecycle ends at: NOT_CREATED → CREATED.
+  - No execution or broker integration was implemented.
+- Full suite post-Checkpoint-13.4: 4849 passed, 2 pre-existing yfinance-related failures, 3 skipped.
+- Architectural audit: (A) No ExecutionCommand implementation exists — defined conceptually only; (B) No BrokerAdapter implementation exists; (C) No execution path exists; (D) Frozen boundaries intact.
+- Remaining architectural concerns: No execution command layer, no authorization layer, no operational trade intent layer, no mode system, no emergency stop, no account/portfolio layer, no broker adapter, no human approval UI.
+- Audit document: `docs/checkpoint_13_4_execution_authorization_to_execution_command_boundary_audit.md`
+- Verdict: PASS
+
+## CHECKPOINT 13.6 — FINAL EXECUTION ARCHITECTURE INTEGRATION & FREEZE AUDIT (added)
+
+- Scope: AUDIT + INTEGRATION + FREEZE DESIGN ONLY. Final audit of the complete Checkpoint 13 execution architecture. No implementation changes.
+- Key findings:
+  - ZERO execution-related implementations exist anywhere in the repository
+  - All execution concepts (Operational Trade Intent, Execution Authorization, Execution Command, Broker Adapter, Broker Order, Execution Result, Position, Portfolio) exist ONLY as documentation in audit documents
+  - No code path from analysis/planning/paper-trading/dashboard to live broker exists
+  - All Checkpoint 13.1–13.5 conclusions are internally coherent and consistent
+  - No boundary collapse, backward dependency, or accidental live-trading path exists
+  - The architecture is fail-closed by construction (no execution path = no path to fail open)
+  - All implemented models are frozen+slots dataclasses with immutable nested structures
+  - The only credential (UPSTOX_ANALYTICS_TOKEN) is for historical data retrieval ONLY
+  - PaperTrade is simulation-only; no path from PaperTrade to live execution exists
+  - Dashboard is presentation-only; no dashboard endpoint can place orders or bypass authorization
+  - Upstox and Yahoo are DATA PROVIDERS ONLY; no execution API calls exist
+- Test audit: `python -m pytest tests/ -q` → 4849 passed, 2 pre-existing yfinance-related failures, 3 skipped. No regression from 13.5 baseline.
+- Full suite post-Checkpoint-13.6: 4849 passed, 2 pre-existing failures, 3 skipped.
+- Implementation decision: NO IMPLEMENTATION CHANGES. No genuine architectural defect discovered.
+- Freeze decision: CHECKPOINT 13 IS FROZEN.
+- Final architecture: MarketScanResult → TradePlan → [Operational Trade Intent → Execution Authorization → Execution Command → Broker Adapter → Broker Request] → [FUTURE: Broker Order → Execution Result → Position → Portfolio]. Checkpoint 13 freezes BEFORE broker submission.
+- Responsibility matrix: MarketScanResult (analytical truth) → TradePlan (planning truth) → PaperTrade (simulation) / Dashboard (presentation). Future: Operational Trade Intent → Execution Authorization → Execution Command → Broker Adapter → Broker Order → Execution Result → Position → Portfolio.
+- Limitations: No execution implementation, no authorization system, no broker integration, no position/portfolio management, no live trading mode, no execution result ingestion, no idempotency/retry system, no emergency stop, no account binding, no execution mode system.
+- Audit document: `docs/checkpoint_13_6_final_execution_architecture_integration_and_freeze_audit.md`
+- Verdict: PASS WITH LIMITATIONS
