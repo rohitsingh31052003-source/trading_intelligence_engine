@@ -1435,3 +1435,36 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Limitations: No execution implementation, no authorization system, no broker integration, no position/portfolio management, no live trading mode, no execution result ingestion, no idempotency/retry system, no emergency stop, no account binding, no execution mode system.
 - Audit document: `docs/checkpoint_13_6_final_execution_architecture_integration_and_freeze_audit.md`
 - Verdict: PASS WITH LIMITATIONS
+
+## CHECKPOINT 14.2 — OPERATIONAL TRADE INTENT MODEL & DETERMINISTIC IDENTITY IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of OperationalTradeIntent model and its core deterministic identity/integrity mechanisms per Checkpoint 14.1 contract. No dashboard, planning engine, paper trading, authorization, execution, or broker integration.
+- Key findings:
+  - OperationalTradeIntent did not exist before this checkpoint
+  - TradePlan is the authoritative planning artifact; intent is a snapshot/reference derived from it
+  - Implementation is ADDITIVE: no existing engine/model modified
+  - All TradePlan MUST PRESERVE fields copied verbatim by value
+  - account_capital and risk_percent excluded from intent (remain in TradePlan)
+  - target_2 / target_2_supported forbidden from crossing into intent
+- Implementation:
+  - Model: `src/engine/models/operational_trade_intent.py` (frozen+slots dataclass, 26 fields)
+  - Factory: `create_intent_from_plan()` — pure function, deterministic except explicit timestamps
+  - intent_id: "intent-" + sha256[:16] of canonical operational content + instance discriminator
+  - content_fingerprint: "fp-" + sha256[:16] of canonical economic content only
+  - Canonicalization: `_canonical_value()` with Decimal normalization, enum class-qualified names, sorted metadata
+  - Validation: 10 invariants in `__post_init__` + 2 factory-level failure contract rules
+  - Immutability: frozen=True, slots=True, all fields immutable types (tuple/Decimal/str/datetime)
+  - Broker-neutral: no broker symbol, exchange, routing, credentials
+  - Authorization-separated: no authorization_id, approval_state, etc.
+  - Execution-separated: no command_id, fill_price, position_id, etc.
+  - Paper-trading-separated: no paper_trade_id, simulation_state, etc.
+- Tests: `tests/test_operational_trade_intent.py` — 125 tests across 23 areas (A-W)
+  - Model construction, frozen immutability, slots, field preservation, forbidden-field exclusion
+  - Decimal preservation, deterministic intent_id, content_fingerprint determinism
+  - Decimal/enum canonicalization, timestamp validation, version validation
+  - Broker neutrality, authorization/execution/paper-trading separation
+  - Point-in-time independence, no recalculation, failure contract, repeated construction
+- Full suite post-Checkpoint-14.2: 4974 passed (125 new), 2 pre-existing yfinance-related failures, 3 skipped. Pipeline baseline unchanged (signals=4, trades=3).
+- Limitations: No authorization layer, no execution path, no position/portfolio, no broker integration, no live trading, no account binding, no lifecycle management, no dashboard integration, no dedicated serializer (reserved for later checkpoint), no reporting formatter (reserved for later checkpoint).
+- Implementation document: `docs/checkpoint_14_2_operational_trade_intent_model_and_identity_implementation.md`
+- Verdict: PASS
