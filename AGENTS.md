@@ -1468,3 +1468,34 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Limitations: No authorization layer, no execution path, no position/portfolio, no broker integration, no live trading, no account binding, no lifecycle management, no dashboard integration, no dedicated serializer (reserved for later checkpoint), no reporting formatter (reserved for later checkpoint).
 - Implementation document: `docs/checkpoint_14_2_operational_trade_intent_model_and_identity_implementation.md`
 - Verdict: PASS
+
+## CHECKPOINT 14.3 — OPERATIONAL TRADE INTENT FACTORY & TRADEPLAN INTEGRATION BOUNDARY AUDIT (added)
+
+- Scope: AUDIT ONLY. Determine where, when, and under what exact conditions an OperationalTradeIntent should be created from a TradePlan. No production code changes.
+- Key findings:
+  - OperationalTradeIntent has ZERO production consumers (only tests + docs reference it)
+  - All 7 current TradePlan consumers (plan_trade, create_paper_trade, run_paper_trading_cycle, _to_trade_plan_view, PaperTradingEngine.create, TradePlanningEngine.plan, TradePlanFormatter.format) are READ-ONLY or create PaperTrade — NONE should create intents
+  - The existing create_intent_from_plan() factory is correct and requires NO modification
+  - READY_FOR_REVIEW actionability and RiskPlanStatus.VALID have NO relationship to intent creation
+  - Intent creation must be a SEPARATE, EXPLICIT workflow — not a side effect of planning, scanning, or paper trading
+- Recommended integration boundary:
+  - Owner: Dedicated OperationalTradeIntentEngine in src/engine/intelligence/operational_trade_intent.py (NEW file)
+  - Input: Already-created VALID TradePlan (consumed by value, field extraction)
+  - Trigger: Explicit application-level command/workflow — NOT automatic side effect
+  - Timestamps: Caller-supplied (created_at, evaluation_timestamp, valid_until); factory generates none
+  - Duplicate handling: Deterministic identity ensures idempotency by construction
+  - Persistence: Required for future authorization; implementation deferred to later checkpoint
+  - Paper trading: Completely independent (TradePlan → PaperTrade unchanged; intent is a sibling path)
+- Factory ownership decision: Candidate D (dedicated engine) selected. Candidates A (TradePlanningEngine), B (DashboardAnalysisService), C (dashboard orchestration), E (application layer), F (other component) all rejected.
+- Dependency direction preserved: models ← intelligence ← dashboard. No backward arrows. No execution component points into analysis.
+- Authorization compatibility: intent_id + content_fingerprint designed for future authorization binding. No authorization fields on model.
+- Execution compatibility: Chain kept clean (intent → authorization → command → broker adapter). No execution fields on model.
+- Trading-semantics audit: PASS — no BUY/SELL/ENTER/EXIT/HOLD/EXECUTE/ORDER/FILLED/BROKER/POSITION in executable code
+- Point-in-time: Intent creation adds NO candle access, NO engine calls, NO future data
+- Mutation: TradePlan, MarketScanResult, PaperTrade all unchanged by intent creation
+- Recommended next checkpoint files: src/engine/intelligence/operational_trade_intent.py (engine wrapper), src/engine/intelligence/operational_trade_intent_serialization.py (persistence), tests/test_operational_trade_intent_integration.py (integration tests)
+- NO existing files need modification for the integration boundary
+- Full suite post-Checkpoint-14.3: 4974 passed (0 new — audit only), 2 pre-existing yfinance-related failures, 3 skipped. Pipeline baseline unchanged (signals=4, trades=3).
+- Audit document: `docs/checkpoint_14_3_operational_trade_intent_factory_and_trade_plan_integration_boundary_audit.md`
+- Verdict: PASS WITH LIMITATIONS
+- Limitations: No clock abstraction, no persistence implementation, no authorization layer, no dashboard integration in this checkpoint. All deferred by design.
