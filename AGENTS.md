@@ -1541,3 +1541,29 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract preserved: intent_id ("intent-"+sha256[:16]) and content_fingerprint ("fp-"+sha256[:16]) deterministic per Checkpoint 14.2.
 - Verdict: PASS
 - Implementation document: docs/checkpoint_14_5_operational_trade_intent_application_integration_and_lifecycle_boundary_audit.md
+
+## CHECKPOINT 14.6 — FINAL OPERATIONAL TRADE INTENT INTEGRATION & FREEZE AUDIT (added)
+
+- Scope: Final audit of the complete Checkpoint 14.x Operational Trade Intent subsystem (14.1–14.5). Answers 36 specific audit questions against current code, not prior audit claims. Verifies the subsystem forms a coherent, isolated, deterministic boundary before freezing.
+- Key findings:
+  - Checkpoints 14.1–14.5 form a clean 5-layer architecture: model → engine → application service → dashboard service → API route
+  - No circular dependencies, no backward arrows, no cross-boundary leakage
+  - OperationalTradeIntentApplicationService is stateless (no cache, no registry, no mutable state)
+  - No datetime.now() in engine or application service (caller-supplied timestamps only)
+  - POST /api/operational-trade-intent fails closed on invalid input (HTTP 400)
+  - plan_trade(), create_paper_trade(), run_paper_trading_cycle() NEVER create intents
+  - TradePlan, MarketScanResult, PaperTrade all unchanged by intent creation
+  - No authorization, execution, broker, persistence introduced
+  - PaperTrade remains independent sibling path
+  - Identity contract preserved: intent_id ("intent-"+sha256[:16]), content_fingerprint ("fp-"+sha256[:16])
+  - 252 focused tests pass (125 model + 69 engine + 58 application)
+  - 602 focused regression tests pass (trade planning + paper trading + operations)
+  - Full suite: 5101 passed, 2 pre-existing yfinance failures, 3 skipped
+- Architecture:
+  - Model: src/engine/models/operational_trade_intent.py (frozen+slots, immutable, 26 fields)
+  - Engine: src/engine/intelligence/operational_trade_intent.py (stateless, explicit creation)
+  - Application service: src/engine/intelligence/operational_trade_intent_application.py (stateless facade)
+  - Dashboard: src/dashboard/services.py (OperationalTradeIntentRequest + create_operational_trade_intent), src/dashboard/views.py (OperationalTradeIntentView), src/dashboard/app.py (POST /api/operational-trade-intent)
+- Freeze decision: CHECKPOINT 14 IS FROZEN.
+- Audit document: docs/checkpoint_14_6_final_operational_trade_intent_integration_and_freeze_audit.md
+- Verdict: PASS
