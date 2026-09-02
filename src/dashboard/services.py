@@ -88,6 +88,7 @@ from dashboard.views import (
     HistoricalDatasetStatusView,
     InstrumentOperationRowView,
     MarketOverviewView,
+    OperationalTradeIntentView,
     OperationsCycleView,
     PaperTradeJournalView,
     PaperTradeView,
@@ -381,6 +382,56 @@ class OperationsRequest:
 
 
 @dataclass(frozen=True)
+class OperationalTradeIntentRequest:
+    """
+    An explicit Operational Trade Intent creation request (Checkpoint 14.5).
+
+    Pairs the existing current analysis (instrument + setup timeframe) +
+    user-supplied account-risk parameters with an explicit creation
+    timestamp to request creation of an OperationalTradeIntent. The
+    service reuses the EXISTING current analysis' trade geometry + the
+    EXISTING Product Phase 4 trade plan VERBATIM; it NEVER accepts
+    arbitrary entry / stop / target values that would bypass the
+    authoritative engine geometry.
+
+    This is an EXPLICIT application action. A human (or an explicit
+    caller) requests intent creation deliberately; this is NOT automatic
+    trading and NOT a side effect of planning, scanning, or paper
+    trading.
+
+    Attributes:
+
+    instrument
+        Canonical instrument name to create an intent for.
+
+    account_capital / risk_percent
+        User-supplied account-risk parameters reused by the existing Phase 4
+        planner to size the position. The intent layer performs NO new
+        position sizing.
+
+    setup_timeframe / context_timeframe
+        Dashboard setup / context timeframe pair.
+
+    created_at
+        Explicit creation timestamp (the human/caller action time).
+        REQUIRED. Caller-supplied so tests are deterministic (no wall-clock
+        read). Timezone-aware.
+
+    label / metadata
+        Optional identity / metadata carried onto the intent.
+    """
+
+    instrument: str
+    account_capital: Any
+    risk_percent: Any
+    created_at: datetime
+    setup_timeframe: str = "15m"
+    context_timeframe: str | None = None
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChartPayload:
     """
     Candlestick chart payload (backend-authored; the frontend renders
@@ -483,6 +534,18 @@ class DashboardAnalysisService:
         self.paper_trading_engine = PaperTradingEngine(PaperTradeConfig())
         self.paper_trade_performance_engine = PaperTradePerformanceEngine()
         self.paper_trade_store = paper_trade_store
+        # Checkpoint 14.5 — Operational Trade Intent application service.
+        # The application-level owner of explicit OperationalTradeIntent
+        # creation. Wraps the OperationalTradeIntentEngine (which wraps the
+        # factory). Stateless, deterministic, reusable outside the
+        # dashboard. Performs NO market analysis / decision / prediction /
+        # execution / authorization / paper-trading. It ONLY delegates.
+        from engine.intelligence.operational_trade_intent_application import (
+            OperationalTradeIntentApplicationService,
+        )
+        self.operational_trade_intent_service = (
+            OperationalTradeIntentApplicationService()
+        )
         # Product Phase 5 operations — a THIN orchestration layer that runs
         # one deterministic paper-trading observation cycle over a watchlist
         # using the EXISTING provider + analysis + paper-trading layers. It
@@ -1250,6 +1313,96 @@ class DashboardAnalysisService:
         updated = self.paper_trading_engine.cancel(trade)
         self.paper_trade_store.save(updated, overwrite=True)
         return to_paper_trade_view(updated)
+
+    # ------------------------------------------------------------
+    # OPERATIONAL TRADE INTENT (Checkpoint 14.5)
+    # ------------------------------------------------------------
+
+    def create_operational_trade_intent(
+        self,
+        request: OperationalTradeIntentRequest,
+    ) -> OperationalTradeIntentView:
+        """
+        Create an OperationalTradeIntent from the EXISTING current analysis.
+
+        ORCHESTRATION ONLY: reuses :meth:`analyze` (existing pipeline) +
+        the :class:`TradePlanningEngine` (deterministic calculation) to
+        obtain the authoritative TradePlan, then delegates the explicit
+        intent creation to the
+        :class:`~engine.intelligence.operational_trade_intent_application.OperationalTradeIntentApplicationService`.
+
+        The existing decision / geometry / plan are reused VERBATIM — never
+        recomputed, never renamed to BUY/SELL, never upgraded / downgraded.
+        The intent is an immutable operational snapshot/reference of the
+        TradePlan. It is NOT authorization, NOT execution, NOT a paper
+        trade.
+
+        GUARANTEES (Checkpoint 14.5):
+
+        * **Reuse-only**: reuses :meth:`analyze` + the existing
+          :class:`TradePlanningEngine` + the
+          :class:`~engine.intelligence.operational_trade_intent_application.OperationalTradeIntentApplicationService`.
+        * **Authoritative geometry**: entry / stop / target_1 /
+          risk_distance / reward_distance / risk_reward_ratio are reused
+          VERBATIM from the Sprint 11R candidate. The plan NEVER
+          recomputes a second entry / stop / target / R:R and NEVER
+          invents Target 2.
+        * **Explicit action**: intent creation requires an explicit call
+          with a caller-supplied ``created_at``. It is NEVER created
+          automatically as a side effect of scanning, planning, or paper
+          trading.
+        * **Completed-candle guarantee**: inherited from :meth:`analyze`
+          — the analysis uses the latest COMPLETED setup candle; a
+          forming candle is never fed to the engine and no future candle
+          is read.
+        * **No look-ahead**: this method accepts NO ``future`` /
+          ``future_candles`` argument; it never calls the Sprint 11W
+          outcome evaluator and never runs the historical pipeline.
+        * **No prediction**: the intent makes NO profitability or
+          predictive claim. It is a read-only operational snapshot of a
+          TradePlan.
+        * **Timestamp responsibility**: ``created_at`` is caller-supplied
+          (REQUIRED). The service NEVER generates it silently.
+
+        The result is DESCRIPTIVE ONLY. It does NOT guarantee future
+        performance and does NOT constitute a trading recommendation.
+        """
+
+        # Reuse the existing current analysis (completed-candle, no
+        # look-ahead). The view carries the authoritative geometry +
+        # decision + actionability reused verbatim.
+        view = self.analyze(
+            AnalysisRequest(
+                instrument=request.instrument,
+                setup_timeframe=request.setup_timeframe,
+                context_timeframe=request.context_timeframe,
+            ),
+        )
+        geom = view.geometry
+        # Reuse the Phase 4 planner to create the authoritative TradePlan.
+        plan = self.trade_planning_engine.plan(
+            instrument=request.instrument,
+            timeframe=request.setup_timeframe,
+            account_capital=request.account_capital,
+            risk_percent=request.risk_percent,
+            geometry=geom,
+            direction=geom.direction,
+            existing_decision=view.decision.decision_classification,
+            actionability=view.actionability.value,
+            label=request.label,
+            metadata=dict(request.metadata) if request.metadata else None,
+        )
+        # Delegate the explicit intent creation to the application
+        # service. The service wraps the engine which wraps the factory.
+        # TradePlan values are copied VERBATIM; no recalculation.
+        intent = self.operational_trade_intent_service.create_intent_from_trade_plan(
+            plan,
+            created_at=request.created_at,
+            evaluation_timestamp=view.evaluation_timestamp,
+            label=request.label,
+            metadata=dict(request.metadata) if request.metadata else None,
+        )
+        return OperationalTradeIntentView.from_intent(intent)
 
     def load_paper_trade(self, paper_trade_id: str) -> PaperTradeView:
         """Load a single persisted paper trade as a view."""
@@ -2247,6 +2400,7 @@ __all__ = [
     "DEFAULT_STALENESS_SECONDS",
     "EvidenceSource",
     "HistoricalEvidenceSource",
+    "OperationalTradeIntentRequest",
     "OperationsRequest",
     "PaperTradeManualCloseRequest",
     "PaperTradeRequest",

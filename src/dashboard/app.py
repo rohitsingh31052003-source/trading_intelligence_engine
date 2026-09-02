@@ -37,6 +37,7 @@ from dashboard.services import (
     AnalysisRequest,
     DashboardAnalysisService,
     EvidenceSource,
+    OperationalTradeIntentRequest,
     PaperTradeManualCloseRequest,
     PaperTradeRequest,
     PaperTradeTrackRequest,
@@ -46,6 +47,7 @@ from dashboard.services import (
     default_service,
 )
 from dashboard.views import (
+    operational_trade_intent_view_to_jsonable,
     operations_cycle_view_to_jsonable,
     paper_trade_journal_view_to_jsonable,
     paper_trade_view_to_jsonable,
@@ -485,6 +487,82 @@ def create_app(service: DashboardAnalysisService | None = None) -> FastAPI:
             ),
         )
         return trade_plan_view_to_jsonable(plan_view)
+
+    # ------------------------------------------------------------
+    # OPERATIONAL TRADE INTENT (Checkpoint 14.5)
+    # ------------------------------------------------------------
+
+    @app.post("/api/operational-trade-intent", response_class=JSONResponse)
+    def api_create_operational_trade_intent(
+        instrument: str,
+        account_capital: str,
+        risk_percent: str,
+        created_at: str,
+        timeframe: str = "15m",
+        context_timeframe: str | None = None,
+        label: str = "",
+    ):
+        """Create an OperationalTradeIntent from the EXISTING current analysis.
+
+        This is an EXPLICIT mutation/action endpoint. It is NOT a GET
+        endpoint — intent creation requires an explicit POST action.
+
+        Accepts ``instrument``, ``timeframe``, ``account_capital``,
+        ``risk_percent``, and ``created_at`` (ISO 8601, timezone-aware).
+        The intent reuses the EXISTING current analysis' trade geometry +
+        the Phase 4 trade plan VERBATIM; it never accepts arbitrary
+        entry / stop / target values. All inputs are validated; invalid
+        inputs result in a 400 response (never a successful intent).
+
+        The created intent is an immutable operational snapshot/reference
+        of the TradePlan. It is NOT authorization, NOT execution, NOT a
+        paper trade. The response never contains a BUY/SELL recommendation.
+        """
+
+        from datetime import datetime
+
+        svc = _service()
+        try:
+            created_at_dt = datetime.fromisoformat(created_at)
+            if created_at_dt.tzinfo is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_created_at",
+                        "detail": "created_at must be timezone-aware "
+                        "(ISO 8601 with offset).",
+                    },
+                )
+        except (ValueError, TypeError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "invalid_created_at",
+                    "detail": f"created_at must be a valid ISO 8601 "
+                    f"timestamp: {exc}",
+                },
+            )
+        try:
+            intent_view = svc.create_operational_trade_intent(
+                OperationalTradeIntentRequest(
+                    instrument=instrument,
+                    account_capital=account_capital,
+                    risk_percent=risk_percent,
+                    created_at=created_at_dt,
+                    setup_timeframe=timeframe,
+                    context_timeframe=context_timeframe,
+                    label=label,
+                ),
+            )
+        except (ValueError, TypeError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "intent_creation_failed",
+                    "detail": str(exc),
+                },
+            )
+        return operational_trade_intent_view_to_jsonable(intent_view)
 
     # ------------------------------------------------------------
     # PAPER TRADING (Product Phase 5)

@@ -1517,6 +1517,152 @@ def trade_plan_view_to_jsonable(view: TradePlanView) -> dict[str, Any]:
 
 
 # ============================================================
+# OPERATIONAL TRADE INTENT (Checkpoint 14.5) — presentation projection
+# ============================================================
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalTradeIntentView:
+    """
+    Presentation view of an
+    :class:`~engine.models.operational_trade_intent.OperationalTradeIntent`.
+
+    A READ-ONLY presentation projection of an already-computed
+    OperationalTradeIntent. It implements NO calculation, NO prediction,
+    NO recommendation. Every value is copied verbatim from the intent
+    model.
+
+    The intent is NOT authorization, NOT execution permission, NOT an
+    execution command, NOT an order, NOT a broker request, NOT a position,
+    NOT a portfolio, and NOT a paper trade. It is a read-only operational
+    snapshot/reference of a TradePlan.
+
+    Attributes are thin projections of the intent model fields; see
+    :class:`~engine.models.operational_trade_intent.OperationalTradeIntent`
+    for the authoritative semantics.
+    """
+
+    intent_id: str = ""
+    plan_id: str = ""
+    instrument: str = ""
+    timeframe: str = ""
+    direction: str = ""
+    existing_decision: str = ""
+    actionability: str = ""
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    target_1: Decimal | None = None
+    engine_risk_distance: Decimal | None = None
+    engine_reward_distance: Decimal | None = None
+    engine_risk_reward_ratio: Decimal | None = None
+    quantity: Decimal | None = None
+    planned_risk: Decimal | None = None
+    maximum_risk: Decimal | None = None
+    risk_plan_status: str = ""
+    created_at: datetime | None = None
+    evaluation_timestamp: datetime | None = None
+    valid_until: datetime | None = None
+    content_fingerprint: str = ""
+    version: int = 1
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+    rationale: str = ""
+    label: str = ""
+    metadata: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    @classmethod
+    def from_intent(cls, intent) -> "OperationalTradeIntentView":
+        """Build a presentation view from an OperationalTradeIntent."""
+        return cls(
+            intent_id=intent.intent_id,
+            plan_id=intent.plan_id,
+            instrument=intent.instrument,
+            timeframe=intent.timeframe,
+            direction=intent.direction,
+            existing_decision=intent.existing_decision,
+            actionability=intent.actionability,
+            entry=intent.entry,
+            stop=intent.stop,
+            target_1=intent.target_1,
+            engine_risk_distance=intent.engine_risk_distance,
+            engine_reward_distance=intent.engine_reward_distance,
+            engine_risk_reward_ratio=intent.engine_risk_reward_ratio,
+            quantity=intent.quantity,
+            planned_risk=intent.planned_risk,
+            maximum_risk=intent.maximum_risk,
+            risk_plan_status=intent.risk_plan_status.value,
+            created_at=intent.created_at,
+            evaluation_timestamp=intent.evaluation_timestamp,
+            valid_until=intent.valid_until,
+            content_fingerprint=intent.content_fingerprint,
+            version=intent.version,
+            warnings=intent.warnings,
+            rationale=intent.rationale,
+            label=intent.label,
+            metadata=intent.metadata,
+        )
+
+
+def operational_trade_intent_view_to_jsonable(
+    view: OperationalTradeIntentView,
+) -> dict[str, Any]:
+    """Convert an :class:`OperationalTradeIntentView` into a JSON-serializable dict.
+
+    Deterministic and presentation-only. ``Decimal`` values are rendered
+    as their string form so monetary precision survives the JSON round
+    trip; a parallel ``_float`` field is included for convenience
+    consumers. ``datetime`` values are rendered as ISO strings. No value
+    is recomputed.
+    """
+
+    def _dec(d: Decimal | None) -> str | None:
+        return None if d is None else str(d)
+
+    def _decf(d: Decimal | None) -> float | None:
+        return None if d is None else float(d)
+
+    def _ts(t: datetime | None) -> str | None:
+        return None if t is None else t.isoformat()
+
+    return {
+        "intent_id": view.intent_id,
+        "plan_id": view.plan_id,
+        "instrument": view.instrument,
+        "timeframe": view.timeframe,
+        "direction": view.direction,
+        "existing_decision": view.existing_decision,
+        "actionability": view.actionability,
+        "entry": _dec(view.entry),
+        "entry_float": _decf(view.entry),
+        "stop": _dec(view.stop),
+        "stop_float": _decf(view.stop),
+        "target_1": _dec(view.target_1),
+        "target_1_float": _decf(view.target_1),
+        "engine_risk_distance": _dec(view.engine_risk_distance),
+        "engine_risk_distance_float": _decf(view.engine_risk_distance),
+        "engine_reward_distance": _dec(view.engine_reward_distance),
+        "engine_reward_distance_float": _decf(view.engine_reward_distance),
+        "engine_risk_reward_ratio": _dec(view.engine_risk_reward_ratio),
+        "engine_risk_reward_ratio_float": _decf(view.engine_risk_reward_ratio),
+        "quantity": _dec(view.quantity),
+        "quantity_float": _decf(view.quantity),
+        "planned_risk": _dec(view.planned_risk),
+        "planned_risk_float": _decf(view.planned_risk),
+        "maximum_risk": _dec(view.maximum_risk),
+        "maximum_risk_float": _decf(view.maximum_risk),
+        "risk_plan_status": view.risk_plan_status,
+        "created_at": _ts(view.created_at),
+        "evaluation_timestamp": _ts(view.evaluation_timestamp),
+        "valid_until": _ts(view.valid_until),
+        "content_fingerprint": view.content_fingerprint,
+        "version": view.version,
+        "warnings": list(view.warnings),
+        "rationale": view.rationale,
+        "label": view.label,
+        "metadata": [[k, v] for k, v in view.metadata],
+    }
+
+
+# ============================================================
 # PAPER TRADING (Product Phase 5) — presentation projections
 # ============================================================
 
@@ -1984,6 +2130,7 @@ __all__ = [
     "HistoricalDatasetStatusView",
     "InstrumentOperationRowView",
     "MarketOverviewView",
+    "OperationalTradeIntentView",
     "OperationsCycleView",
     "PaperTradeJournalView",
     "PaperTradeView",
@@ -1994,6 +2141,7 @@ __all__ = [
     "derive_actionability",
     "derive_actionability_reason",
     "historical_dataset_view_to_jsonable",
+    "operational_trade_intent_view_to_jsonable",
     "operations_cycle_view_to_jsonable",
     "paper_trade_journal_view_to_jsonable",
     "paper_trade_view_to_jsonable",

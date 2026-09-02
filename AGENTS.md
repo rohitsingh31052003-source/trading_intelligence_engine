@@ -1513,3 +1513,31 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract preserved: intent_id ("intent-"+sha256[:16]) and content_fingerprint ("fp-"+sha256[:16]) deterministic per Checkpoint 14.2.
 - Verdict: PASS
 - Implementation document: docs/checkpoint_14_4_operational_trade_intent_engine_and_explicit_creation_workflow_implementation.md
+
+## CHECKPOINT 14.5 — OPERATIONAL TRADE INTENT APPLICATION INTEGRATION & LIFECYCLE BOUNDARY AUDIT (added)
+
+- Scope: AUDIT + CONTROLLED IMPLEMENTATION of the application-level integration for explicit OperationalTradeIntent creation. Establishes the correct application-level owner of the intent creation workflow and implements the minimal integration (application service, dashboard service method, API endpoint, presentation view).
+- Key findings:
+  - OperationalTradeIntent has ZERO production consumers before this checkpoint (only tests + docs)
+  - All existing TradePlan consumers (plan_trade, create_paper_trade, paper trading operations, TradePlanFormatter) are READ-ONLY or create PaperTrade — NONE should create intents
+  - The existing OperationalTradeIntentEngine (Checkpoint 14.4) and create_intent_from_plan() factory (Checkpoint 14.2) are correct and require NO modification
+  - Intent creation must be a SEPARATE, EXPLICIT workflow — not a side effect of planning, scanning, paper trading, or dashboard rendering
+- Selected application boundary: Candidate E (new dedicated application service). Candidates A (FastAPI route — HTTP-only), B (dashboard view — presentation only), C (dashboard service — couples to dashboard), D (existing orchestration — does not exist), F (direct engine — lacks discoverability) all rejected as primary owner.
+- Architecture: TradePlan -> OperationalTradeIntentApplicationService -> OperationalTradeIntentEngine -> OperationalTradeIntent. The application service is STATELESS, PURE, DETERMINISTIC. It wraps the engine and provides a clean, reusable, testable facade.
+- Explicit creation workflow: Intent is created ONLY through an explicit call to application_service.create_intent_from_trade_plan(plan, created_at=...) or dashboard_service.create_operational_trade_intent(request) or POST /api/operational-trade-intent. NEVER created automatically.
+- Timestamps: Caller-supplied (created_at REQUIRED, timezone-aware). Application service NEVER generates timestamps silently. No datetime.now() in application service or engine.
+- API decision: POST /api/operational-trade-intent implemented (explicit mutation endpoint, not GET). Receives instrument + account params + created_at, reuses existing analysis geometry verbatim, returns OperationalTradeIntent JSON. Fails closed on invalid input (HTTP 400).
+- Dashboard decision: DashboardAnalysisService.create_operational_trade_intent() implemented. Creates TradePlan from current analysis, delegates to application service, returns OperationalTradeIntentView. UI does NOT automatically create intents.
+- Persistence decision: NOT implemented. No demonstrated architectural requirement. Deferred to future checkpoint.
+- Implementation files:
+  - src/engine/intelligence/operational_trade_intent_application.py (OperationalTradeIntentApplicationService)
+  - src/dashboard/services.py (OperationalTradeIntentRequest dataclass + create_operational_trade_intent method + service instantiation)
+  - src/dashboard/views.py (OperationalTradeIntentView + from_intent classmethod + operational_trade_intent_view_to_jsonable)
+  - src/dashboard/app.py (POST /api/operational-trade-intent endpoint)
+  - tests/test_operational_trade_intent_application.py (58 tests)
+  - docs/checkpoint_14_5_operational_trade_intent_application_integration_and_lifecycle_boundary_audit.md
+- Tests: 58 focused tests pass. Focused regression (544 tests): all pass. Full suite: 5101 passed (58 new), 2 pre-existing yfinance-related failures, 3 skipped. No new regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no authorization, no execution, no broker, no persistence, no market data access.
+- Identity contract preserved: intent_id ("intent-"+sha256[:16]) and content_fingerprint ("fp-"+sha256[:16]) deterministic per Checkpoint 14.2.
+- Verdict: PASS
+- Implementation document: docs/checkpoint_14_5_operational_trade_intent_application_integration_and_lifecycle_boundary_audit.md
