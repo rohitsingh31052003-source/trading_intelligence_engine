@@ -1567,3 +1567,55 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Freeze decision: CHECKPOINT 14 IS FROZEN.
 - Audit document: docs/checkpoint_14_6_final_operational_trade_intent_integration_and_freeze_audit.md
 - Verdict: PASS
+
+## CHECKPOINT 15.1 — EXECUTION AUTHORIZATION BOUNDARY AUDIT (CORRECTED)
+
+- Scope: ARCHITECTURE-FIRST AUDIT of the Execution Authorization Boundary between OperationalTradeIntent and (future) execution layers. Inspect full repository, design document produced, NO implementation performed unless unavoidable defect found. Must not modify frozen files (Checkpoints 10.8, 11.8, 12.6, 13.6, 14.6).
+- Key findings:
+  - CURRENT STATE: NO authorization boundary exists. OperationalTradeIntent has zero production consumers and is NOT referenced by dashboard views, paper trading, TradePlanFormatter, or FastAPI routes.
+  - AUTHORIZATION MODEL: Verification-based (not approval). OperationalTradeIntent is a VERIFIED, READ-ONLY, IMMUTABLE contract carrying pre-validated TradePlan geometry. No AuthCode, ApprovalToken, or AuthorizationRecord model exists yet.
+  - BOUNDARY POSITION: OperationalTradeIntent is the upstream INPUT to Execution Authorization. It replaces ad-hoc plan object passing with a deterministic, fingerprint-stable, time-bounded artifact. Downstream execution layers must consume Intent, NOT TradePlan directly. OperationalTradeIntent ≠ Execution Authorization.
+  - EXISTING ABSTRACTIONS: No authorization/approval/permission/execution_mode/revoke/expire/supersede terms found in src/ or frozen files.
+  - CONTRACT STABILITY: Identity contract preserved (intent_id, content_fingerprint). No schema changes introduced.
+  - FAIL-CLOSED RULES: Defined in audit but not yet enforced in code (no enforcement hooks exist yet). Next checkpoint must introduce explicit enforcement.
+  - NO UNVOIDABLE DEFECTS FOUND: No code changes required. All issues are future design decisions.
+- Boundary specification:
+  - Upstream: TradePlan (frozen, Checkpoint 14.2) -> OperationalTradeIntent (frozen, Checkpoint 14.2)
+  - Current downstream: None (OperationalTradeIntent has zero production consumers)
+  - Future downstream: Execution Authorization (planned), Execution Command (planned), Broker Adapter (planned)
+- Lifecycle: VALID -> [FUTURE: AUTHORIZATION] -> [FUTURE: CONSUMED]. No REVOKED/EXPIRED/SUPERSEDED states yet (defined in audit for future implementation).
+- Identity/fingerprint contract: intent_id = "intent-" + sha256(content_fields)[:16], content_fingerprint = "fp-" + sha256(content_fields)[:16]. Deterministic and immutable. These identify the intent; authorization will have its own separate authorization_id.
+- Time validity: valid_until is an optional absolute UTC timestamp. Intent is only valid before valid_until if present.
+- Separation preserved: No authorization code, no execution code, no broker code, no persistence code introduced.
+- Correction: Previous 15.1 conclusion that "OperationalTradeIntent IS the execution authorization" was incorrect and is rejected. OperationalTradeIntent ≠ Execution Authorization. The frozen architecture from Checkpoints 13.3–14.6 explicitly separates these concepts. The absence of authorization implementation does not mean intent becomes authorization.
+- Files inspected: src/engine/models/operational_trade_intent.py, src/engine/intelligence/operational_trade_intent.py, src/engine/intelligence/operational_trade_intent_application.py, src/dashboard/services.py, src/dashboard/views.py, src/dashboard/app.py, src/engine/models/trade_plan.py, src/engine/models/paper_trade.py, tests/test_operational_trade_intent.py, tests/test_operational_trade_intent_engine.py, tests/test_operational_trade_intent_application.py, tests/test_trade_planning.py, tests/test_paper_trading.py, docs/checkpoint_13_3_execution_authorization_boundary_audit.md, docs/checkpoint_14_6_final_operational_trade_intent_integration_and_freeze_audit.md, AGENTS.md.
+- Searches performed: Full src/ tree grep for authorization/approval/permission/execution_mode/revoke/expire/supersede terms. Zero hits in source code.
+- Tests: Full suite: 5101 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Limitations: No clock abstraction, no persistence implementation, no authorization layer implementation, no enforcement hooks, no dashboard integration for authorization. All deferred by design.
+- Audit document: docs/checkpoint_15_1_execution_authorization_boundary_audit.md
+- Verdict: PASS WITH LIMITATIONS
+
+## CHECKPOINT 15.2 — EXECUTION AUTHORIZATION MODEL & IDENTITY IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of the Execution Authorization domain model and deterministic identity per Checkpoint 15.1 boundary. No dashboard, planning engine, paper trading, execution, or broker integration.
+- Key findings:
+  - ExecutionAuthorization model implemented as frozen+slots dataclass.
+  - authorization_id format: "auth-" + sha256[:16], deterministic, no UUID/wall-clock dependency.
+  - Identity payload includes intent_id, plan_id, content_fingerprint, status, authorized_at, valid_from, expires_at, issuer, authorization_method, scope, policy_reference, safety_check_summary, label, metadata.
+  - status is included in canonical identity payload (affects authorization_id).
+  - Timestamps are caller-supplied; model NEVER calls datetime.now()/utcnow().
+  - __post_init__ validates internal consistency: required fields, timestamp ordering, status invariants, fail-closed principle.
+  - create_authorization() factory is pure/deterministic; does NOT mutate intent; does NOT recalculate geometry; does NOT access trade geometry, market data, paper trading, or external system code.
+  - AUTHORIZED timing validation lives in the factory (not __post_init__), since valid_from >= authorized_at and expires_at > valid_from together imply expires_at > authorized_at for AUTHORIZED.
+  - Fail-closed: malformed/contradictory records cannot become AUTHORIZED.
+  - No authorization fields on OperationalTradeIntent; no execution fields on ExecutionAuthorization.
+  - Forbidden imports verified: no paper_trading, market_scanner, trade_planning, historical providers, Yahoo, Upstox, FastAPI, dashboard services, broker SDKs, or execution code.
+- Implementation files:
+  - src/engine/models/execution_authorization.py (model + factory)
+  - tests/test_execution_authorization.py (97 tests)
+  - docs/checkpoint_15_2_execution_authorization_model_and_identity_implementation.md
+- Tests: 97 focused tests pass. Frozen regression suites: 602 passed. Full suite: 5198 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no authorization integration, no execution, no broker, no persistence, no market data access.
+- Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic.
+- Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
+- Verdict: PASS
