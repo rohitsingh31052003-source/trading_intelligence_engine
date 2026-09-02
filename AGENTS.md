@@ -1499,3 +1499,17 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Audit document: `docs/checkpoint_14_3_operational_trade_intent_factory_and_trade_plan_integration_boundary_audit.md`
 - Verdict: PASS WITH LIMITATIONS
 - Limitations: No clock abstraction, no persistence implementation, no authorization layer, no dashboard integration in this checkpoint. All deferred by design.
+
+## CHECKPOINT 14.4 — OPERATIONAL TRADE INTENT ENGINE & EXPLICIT CREATION WORKFLOW IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of the dedicated OperationalTradeIntentEngine and its explicit creation workflow per Checkpoint 14.3 recommendation. No dashboard, planning engine, paper trading, authorization, execution, or broker integration.
+- Architecture: TradePlan -> OperationalTradeIntentEngine -> OperationalTradeIntent. The engine is STATELESS, PURE, DETERMINISTIC. It delegates ALL authoritative construction to the existing create_intent_from_plan() factory (Checkpoint 14.2). It performs NO recalculation of entry/stop/target/quantity/risk/geometry. It copies TradePlan fields VERBATIM.
+- Explicit creation workflow: Intent is created ONLY through an explicit call to engine.create_from_plan(plan, created_at=...). NEVER created automatically as a side effect of scanning, planning, paper trading, or dashboard rendering. NO READY_FOR_REVIEW trigger.
+- Timestamps: Caller-supplied (created_at REQUIRED, evaluation_timestamp/valid_until optional). Engine NEVER generates timestamps silently. No datetime.now() in engine.
+- API: OperationalTradeIntentEngine.create_from_plan(*, plan, created_at, evaluation_timestamp=None, valid_until=None, label=None, metadata=None) -> OperationalTradeIntent. Type validation (TypeError for non-TradePlan), precondition validation (ValueError for non-VALID/non-directional).
+- Implementation files: src/engine/intelligence/operational_trade_intent.py (engine), tests/test_operational_trade_intent_engine.py (69 tests), docs/checkpoint_14_4_operational_trade_intent_engine_and_explicit_creation_workflow_implementation.md.
+- Tests: 69 focused tests pass. Full suite: 5043 passed (69 new), 2 pre-existing yfinance-related failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine calls, no authorization, no execution, no broker, no persistence, no dashboard integration.
+- Identity contract preserved: intent_id ("intent-"+sha256[:16]) and content_fingerprint ("fp-"+sha256[:16]) deterministic per Checkpoint 14.2.
+- Verdict: PASS
+- Implementation document: docs/checkpoint_14_4_operational_trade_intent_engine_and_explicit_creation_workflow_implementation.md
