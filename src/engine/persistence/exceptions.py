@@ -24,9 +24,34 @@ class UnsupportedAuthorizationSchemaVersionError(AuthorizationStoreError):
     """A persisted authorization uses an unsupported schema version."""
 
 
+# ============================================================
+# EXECUTION COMMAND PERSISTENCE EXCEPTIONS (Checkpoint 16.5)
+# ============================================================
+
+
+class CommandStoreError(Exception):
+    """Base error for execution command persistence."""
+
+
+class CommandNotFoundError(CommandStoreError):
+    """A requested command was not found in the store."""
+
+
+class CommandIntegrityError(CommandStoreError):
+    """A persisted command failed an integrity check."""
+
+
+class UnsupportedCommandSchemaVersionError(CommandStoreError):
+    """A persisted command uses an unsupported schema version."""
+
+
 __all__ = [
     "AuthorizationIntegrityError",
     "AuthorizationNotFoundError",
     "AuthorizationStoreError",
+    "CommandIntegrityError",
+    "CommandNotFoundError",
+    "CommandStoreError",
     "UnsupportedAuthorizationSchemaVersionError",
+    "UnsupportedCommandSchemaVersionError",
 ]

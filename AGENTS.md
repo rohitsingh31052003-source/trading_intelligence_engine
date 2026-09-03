@@ -1822,3 +1822,26 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Freeze decision: CHECKPOINT 16.4 IS FROZEN.
 - Limitations: No ExecutionCommandStore implementation, no post-CREATED lifecycle states, no dashboard integration for commands, no broker adapter (all intentionally deferred).
 - Verdict: PASS WITH LIMITATIONS
+
+## CHECKPOINT 16.5 — EXECUTION COMMAND PERSISTENCE IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of ExecutionCommand persistence per Checkpoint 16.4 boundary audit. Adds atomic filesystem persistence for ExecutionCommand records with deterministic identity validation, integrity checks, and fail-closed corruption handling. No dashboard, planning engine, paper trading, execution, or broker integration. No frozen files modified.
+- Key findings:
+  - ExecutionCommandStore provides atomic save/load/exists/list/delete operations using tempfile.mkstemp + os.replace pattern.
+  - command_id validated as safe filesystem identifier ("cmd-" + sha256[:16]); rejects path traversal and reserved names.
+  - Duplicate saves are idempotent (identical content silently succeeds). Conflicting content raises CommandIntegrityError unless overwrite=True.
+  - Fail-closed: malformed JSON, missing schema, identity mismatch, missing files, or corruption never return a valid command — raise typed exceptions.
+  - No lifecycle transitions (SUBMITTED/FILLED/etc.) implemented — deferred per Checkpoint 16.4.
+  - No execution semantics, broker adapters, order placement, or upstream mutation.
+  - Serialization is deterministic, self-describing JSON with schema version 1, type tags (decimal/datetime/enum/tuple), lossless round-trip.
+- Implementation files:
+  - src/engine/persistence/execution_command_serialization.py (deterministic JSON with schema version 1, type tags)
+  - src/engine/persistence/execution_command_store.py (atomic filesystem store)
+  - src/engine/persistence/exceptions.py EXTENDED with CommandStoreError, CommandNotFoundError, CommandIntegrityError, UnsupportedCommandSchemaVersionError
+  - tests/test_execution_command_store.py (68 tests)
+  - docs/checkpoint_16_5_execution_command_persistence_implementation.md
+- Tests: 68 focused tests pass (basic persistence, round-trip, restart, duplicate handling, corruption, security, immutability, list/delete, schema version, atomic write, serialization, boundary isolation). Focused regression: 909 passed. Full suite: 5476 passed (was 5408; +68 new), 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no execution, no broker, no market data access, no dashboard integration.
+- Identity contract: command_id ("cmd-" + sha256[:16]) deterministic; authorization_id, intent_id, content_fingerprint preserved verbatim.
+- Limitations: No clock abstraction, no post-CREATED lifecycle transitions, no dashboard integration, no execution path, no broker adapter (all intentionally deferred).
+- Verdict: PASS
