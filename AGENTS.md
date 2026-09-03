@@ -1718,4 +1718,37 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Freeze decision: CHECKPOINT 15 IS FROZEN.
 - Remaining limitations: No post-AUTHORIZED lifecycle transitions, no dashboard integration, no execution command layer, no broker adapter, no live trading (all intentionally deferred).
 - Next recommended boundary: Checkpoint 16 — Authorized Intent Snapshot / Execution Command layer (broker-neutral, fail-closed, deterministic).
+
+## CHECKPOINT 16.1 — AUTHORIZED INTENT TO EXECUTION COMMAND BOUNDARY AUDIT & DESIGN (added)
+
+- Scope: AUDIT + CONTRACT DESIGN ONLY. Determines what exact information is permitted to cross the boundary from ExecutionAuthorization (Checkpoint 15, frozen) to a future ExecutionCommand layer. Defines the first future architectural boundary after ExecutionAuthorization. No ExecutionCommand implementation performed.
+- Key findings:
+  - No ExecutionCommand, broker order, execution result, position, or portfolio abstraction exists anywhere in the repository.
+  - The ExecutionCommand must be the first downstream artifact of an AUTHORIZED ExecutionAuthorization — a deterministic, immutable, broker-neutral snapshot.
+  - The command must bind to authorization_id, intent_id, plan_id, and content_fingerprint. The invariant command.authorization_id == authorization.authorization_id must hold.
+  - Content fingerprint must be verified BEFORE command creation. Mismatch → NO COMMAND.
+  - Authorization state must be AUTHORIZED. Any other state (ELIGIBLE, EXPIRED, REVOKED, SUPERSEDED, UNAUTHORIZED, missing, unknown, malformed) → NO COMMAND.
+  - The command must remain broker-neutral: entry/stop/target geometry only. All broker-specific concepts (symbol, exchange, order type, validity, routing, account) belong to the Broker Adapter (Checkpoint 13.5, frozen).
+  - Price normalization: allowed only within half-tick tolerance. Beyond tolerance → NO COMMAND (require re-authorization).
+  - Quantity normalization: floor-rounding only. Quantity increase → NO COMMAND (increases risk).
+  - Order types (market/limit/stop/stop-limit) belong to Broker Adapter, NOT ExecutionCommand.
+  - Execution mode (PAPER/LIVE) is inherited from the authorization. Mode change without re-authorization → NO COMMAND.
+  - Paper trading is a sibling path from TradePlan. ExecutionCommand must never reference PaperTrade. Paper-trade results must never modify authorization or intent.
+  - Dashboard is presentation-only. No endpoint constructs ExecutionCommand.
+  - Command lifecycle: NOT_CREATED → CREATED only. No CANCELLED/SUBMITTED/FILLED states on command itself (belongs to downstream Broker Order / Execution Result).
+  - Deterministic command_id ("cmd-" + sha256[:16]). Idempotency_key derived from command_id.
+  - Immutable: frozen+slots dataclass. Authorization and intent are NOT mutated.
+  - Fail-closed: any unknown/missing/contradictory condition → NO COMMAND with explicit typed error.
+  - Point-in-time safety: command valid only within authorization's validity window. No future data accepted.
+- Files inspected:
+  - Source: src/engine/models/execution_authorization.py, src/engine/models/operational_trade_intent.py, src/engine/models/trade_plan.py, src/engine/models/paper_trade.py, src/engine/intelligence/execution_authorization.py, src/engine/intelligence/operational_trade_intent.py, src/engine/persistence/execution_authorization_serialization.py, src/engine/persistence/execution_authorization_store.py, src/engine/persistence/exceptions.py, src/dashboard/services.py, src/dashboard/views.py, src/dashboard/app.py
+  - Prior audits: docs/checkpoint_13_3..13_6, docs/checkpoint_14_6, docs/checkpoint_15_6
+  - Tests: tests/test_execution_authorization*.py, tests/test_operational_trade_intent*.py
+- Files created: docs/checkpoint_16_1_authorized_intent_to_execution_command_boundary_audit.md
+- Files modified: AGENTS.md (this entry only)
+- Tests: Full suite: 5339 passed, 2 pre-existing yfinance failures, 3 skipped, 1 warning. No regressions (audit-only, no implementation changes).
+- Separation preserved: No execution code, no broker code, no broker SDKs, no order placement, no position management, no portfolio management, no dashboard integration, no paper-trading integration.
+- Identity contract: command_id ("cmd-" + sha256[:16]) deterministic; authorization_id, intent_id, content_fingerprint preserved verbatim from authorization.
+- Limitations: No ExecutionCommand implementation, no command persistence, no command store, no command engine integration, no dashboard integration for commands, no broker adapter integration (all intentionally deferred).
+- Verdict: PASS
 - Verdict: PASS
