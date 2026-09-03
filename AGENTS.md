@@ -1689,3 +1689,33 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic; timestamps excluded from identity payload.
 - Limitations: No clock abstraction, no post-AUTHORIZED lifecycle transitions, no authorization layer integration, no dashboard integration, no execution path.
 - Verdict: PASS
+
+## CHECKPOINT 15.6 — FINAL EXECUTION AUTHORIZATION INTEGRATION & FREEZE AUDIT (added)
+
+- Scope: FINAL INTEGRATION AND FREEZE AUDIT of the complete Checkpoint 15 Execution Authorization subsystem (15.1–15.5). Verifies internal coherence, isolation, persistence, determinism, fail-closed behavior, and safety to freeze. No implementation changes. No frozen files modified.
+- Key findings:
+  - Complete Checkpoint 15 chain verified: model → engine → persistence.
+  - OperationalTradeIntent ≠ ExecutionAuthorization (distinct identities, distinct semantics).
+  - Authorization does not mutate intent, TradePlan, or PaperTrade.
+  - No execution artifacts, no broker dependencies, no market data dependencies.
+  - No dashboard integration (intentionally deferred).
+  - Deterministic authorization_id ("auth-" + sha256[:16]).
+  - Atomic filesystem persistence with schema versioning, lossless encoding, fail-closed corruption handling.
+  - Persistence survives process restart (verified by store tests).
+  - Eligibility and authorization are separate concepts (ELIGIBLE ≠ AUTHORIZED).
+  - Lifecycle: UNAUTHORIZED → ELIGIBLE → AUTHORIZED implemented; EXPIRED/REVOKED/SUPERSEDED defined but deferred.
+  - All timestamps caller-supplied, timezone-aware, no wall-clock dependency.
+  - Fail-closed: all failure paths return NOT AUTHORIZED.
+  - No accidental execution path exists anywhere in the repository.
+- Files inspected:
+  - Source: src/engine/models/operational_trade_intent.py, src/engine/models/execution_authorization.py, src/engine/intelligence/operational_trade_intent.py, src/engine/intelligence/execution_authorization.py, src/engine/persistence/execution_authorization_serialization.py, src/engine/persistence/execution_authorization_store.py, src/engine/persistence/exceptions.py, src/engine/persistence/__init__.py, src/engine/models/trade_plan.py, src/engine/models/paper_trade.py, src/dashboard/views.py, src/dashboard/services.py, src/dashboard/app.py
+  - Tests: tests/test_execution_authorization.py, tests/test_execution_authorization_engine.py, tests/test_execution_authorization_store.py, tests/test_operational_trade_intent.py, tests/test_operational_trade_intent_engine.py, tests/test_operational_trade_intent_application.py, tests/test_trade_planning.py, tests/test_paper_trading.py, tests/test_paper_trading_operations.py
+  - Documentation: docs/checkpoint_15_1_execution_authorization_boundary_audit.md, docs/checkpoint_15_2_execution_authorization_model_and_identity_implementation.md, docs/checkpoint_15_3_execution_authorization_engine_and_workflow_implementation.md, docs/checkpoint_15_4_execution_authorization_persistence_and_lifecycle_boundary_audit.md, docs/checkpoint_15_5_execution_authorization_persistence_implementation.md
+- Tests: 238 focused Checkpoint 15 tests pass. Full suite: 5339 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Files created: docs/checkpoint_15_6_final_execution_authorization_integration_and_freeze_audit.md
+- Files modified: AGENTS.md (this entry only)
+- Implementation decision: NO IMPLEMENTATION CHANGES. No genuine blocking defect discovered.
+- Freeze decision: CHECKPOINT 15 IS FROZEN.
+- Remaining limitations: No post-AUTHORIZED lifecycle transitions, no dashboard integration, no execution command layer, no broker adapter, no live trading (all intentionally deferred).
+- Next recommended boundary: Checkpoint 16 — Authorized Intent Snapshot / Execution Command layer (broker-neutral, fail-closed, deterministic).
+- Verdict: PASS
