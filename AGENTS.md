@@ -80,6 +80,7 @@
 - Post-Yahoo-Range-Fix (Yahoo intraday historical-range handling): 3192 passed (37 new in tests/test_yahoo_range_fix.py; fixture path remains fully deterministic). DATA-PROVIDER CORRECTION ONLY: YahooDataProvider._lookback_window now derives the request window from lookback_bars + ENGINE_CONTEXT_BUFFER_BARS (250), capped per-interval at a SAFETY-MARGINED Yahoo max (YAHOO_INTERVAL_MAX_DAYS: 1m=6, <=30m/90m=58, 60m/1h=725, 1d=365*5; default intraday cap 58). 15m/lookback_bars=50 now requests a ~3-day recent window (NOT a 60-day window that Yahoo rejects with "must be within the last 60 days"). reference_now threaded through _lookback_window/_fetch_raw (additive kwarg; default now(UTC)). _FakeYahooBackend.windows added (additive: records (symbol, interval, start, end) for assertion). No intelligence/decision/geometry/trade-plan/paper-trade-lifecycle logic modified. NO Sprint 11A-12E / Product-Phase-1-5 regression.
 - Post-Product-Phase-6E (historical + current intelligence): 3641 passed (77 new in tests/test_historical_evidence_context.py; demo scripts/test_historical_evidence_context.py passes 14 checks; fixture path remains fully deterministic). EVIDENCE INTEGRATION ONLY: HistoricalEvidenceLookupEngine consumes PERSISTED Phase 6D research (SetupResearchStore) and attaches a DESCRIPTIVE HistoricalEvidenceContext to the current assessment; NO decision/geometry/trade-plan/paper-trading/provider modification. The existing decision remains AUTHORITATIVE (REJECTED + STRONG evidence -> REJECTED; trades_created == 0). Point-in-time structural: occurrences strictly before T + outcomes already known at T only; no future/lookahead parameter. NO Sprint 11A-12E / Product-Phase-1-6D regression.
 - Post-Product-Phase-6F (live paper validation): 3740 passed (99 new in tests/test_live_paper_validation.py; demo scripts/test_phase_6f.py passes 44 checks; fixture path remains fully deterministic). VALIDATION ORCHESTRATION ONLY: LivePaperValidation.run_once orchestrates the EXISTING provider + analyze + Phase 6E view.historical_context + PaperTradingOperations.run_once + PaperTradeStore into per-instrument LiveValidationObservation records (lval-<sha256[:16]>) persisted in a dedicated LiveValidationStore (.validation suffix; references research ids + paper-trade ids, never duplicates them). NO decision/geometry/trade-plan/paper-trading/provider/scheduler modification; the existing decision remains AUTHORITATIVE. Point-in-time structural: setup <= T, context < T, research resolved at T, outcome strictly after T; run_once has no future/future_candles/lookahead parameter (OutcomeEvaluator + historical pipeline patched-to-raise regression-tested). NO Sprint 11A-12E / Product-Phase-1-6E regression.
+- Post-Product-Phase-15.5 (execution authorization persistence): 5339 passed (57 new in tests/test_execution_authorization_store.py; fixture path remains fully deterministic). EXECUTION AUTHORIZATION PERSISTENCE ONLY: Added ExecutionAuthorizationStore with atomic filesystem persistence (tempfile.mkstemp + os.replace), deterministic identity validation (auth-<sha256[:16]>), integrity checks (duplicate idempotency + conflicting content rejection), corruption handling, and schema versioning. No execution/broker/planning/paper-trading logic modified. NO Sprint 11A-12E / Product-Phase-1-6F regression.
 
 ## Sprint 11H ÔÇö Research & Robustness Analysis Layer (added)
 - New package `src/engine/research/` sits ABOVE the reporting layer (dependency: models ÔćÉ intelligence ÔćÉ pipeline ÔćÉ reporting ÔćÉ research).
@@ -1664,3 +1665,27 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Limitations: No persistence implementation, no post-AUTHORIZED lifecycle transitions, no execution-side components, no dashboard integration for authorization, no clock abstraction.
 - Audit document: docs/checkpoint_15_4_execution_authorization_persistence_and_lifecycle_boundary_audit.md
 - Verdict: PASS WITH LIMITATIONS
+
+## CHECKPOINT 15.5 — EXECUTION AUTHORIZATION PERSISTENCE IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of Execution Authorization persistence per Checkpoint 15.4 boundary audit. Adds atomic filesystem persistence for ExecutionAuthorization records with deterministic identity validation, integrity checks, and fail-closed corruption handling. No dashboard, planning engine, paper trading, execution, or broker integration.
+- Key findings:
+  - New dedicated persistence package: src/engine/persistence/ (separate boundary, not mixed with paper trading).
+  - ExecutionAuthorizationStore provides atomic save/load/exists/list/delete operations using tempfile.mkstemp + os.replace pattern.
+  - authorization_id validated as safe filesystem identifier ("auth-" + sha256[:16]); rejects path traversal and reserved names.
+  - Duplicate saves are idempotent (identical content silently succeeds). Conflicting content raises AuthorizationIntegrityError unless overwrite=True.
+  - Fail-closed: malformed JSON, missing schema, identity mismatch, missing files, or corruption never return a valid authorization — raise typed exceptions.
+  - No lifecycle transitions (EXPIRED/REVOKED/SUPERSEDED) implemented — deferred per Checkpoint 15.4.
+  - No execution semantics, broker adapters, order placement, or upstream mutation.
+- Implementation files:
+  - src/engine/persistence/execution_authorization_serialization.py (deterministic JSON with schema version 1, type tags)
+  - src/engine/persistence/execution_authorization_store.py (atomic filesystem store)
+  - src/engine/persistence/exceptions.py (typed exception hierarchy)
+  - src/engine/persistence/__init__.py (empty package init)
+  - tests/test_execution_authorization_store.py (57 tests)
+  - docs/checkpoint_15_5_execution_authorization_persistence_implementation.md
+- Tests: 57 focused tests pass (persistence, round-trip, restart, duplicates, corruption, security, immutability, list/delete, schema, atomic writes, boundary isolation). Full suite: 5339 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no authorization integration, no execution, no broker, no market data access.
+- Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic; timestamps excluded from identity payload.
+- Limitations: No clock abstraction, no post-AUTHORIZED lifecycle transitions, no authorization layer integration, no dashboard integration, no execution path.
+- Verdict: PASS
