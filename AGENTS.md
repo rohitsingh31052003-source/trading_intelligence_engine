@@ -1619,3 +1619,25 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic.
 - Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
 - Verdict: PASS
+
+## CHECKPOINT 15.3 — EXECUTION AUTHORIZATION ENGINE & EXPLICIT AUTHORIZATION WORKFLOW IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of the Execution Authorization Engine and explicit authorization workflow on top of the Checkpoint 15.2 model. No dashboard, planning engine, paper trading, execution, or broker integration.
+- Key findings:
+  - ExecutionAuthorizationEngine is stateless, deterministic, fail-closed.
+  - Eligibility and authorization are separate concepts. Eligibility alone does NOT create an AUTHORIZED record.
+  - Engine delegates ExecutionAuthorization construction to the existing create_authorization() factory (Checkpoint 15.2).
+  - Engine validates the intent; it does NOT recalculate entry, stop, target, quantity, planned risk, maximum risk, or risk/reward.
+  - No datetime.now()/utcnow(). Caller supplies evaluation_timestamp.
+  - Engine catches ValueError/TypeError from intent validation gracefully, returning EligibilityResult(eligible=False, reasons=...).
+  - valid_until >= evaluation_timestamp means NOT expired (inclusive boundary: at exactly valid_until the intent is considered expired).
+  - Naive/aware datetime comparison is caught and treated as ineligible.
+- Implementation files:
+  - src/engine/intelligence/execution_authorization.py (engine + result types)
+  - tests/test_execution_authorization_engine.py (84 tests)
+  - docs/checkpoint_15_3_execution_authorization_engine_and_workflow_implementation.md
+- Tests: 84 focused tests pass. Frozen regression suites: 350 passed (trade_planning + paper_trading + paper_trading_operations). Full suite: 5282 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no execution, no broker, no persistence, no market data access.
+- Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic; timestamps excluded from identity payload.
+- Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
+- Verdict: PASS
