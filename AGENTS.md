@@ -1751,4 +1751,24 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract: command_id ("cmd-" + sha256[:16]) deterministic; authorization_id, intent_id, content_fingerprint preserved verbatim from authorization.
 - Limitations: No ExecutionCommand implementation, no command persistence, no command store, no command engine integration, no dashboard integration for commands, no broker adapter integration (all intentionally deferred).
 - Verdict: PASS
+
+## CHECKPOINT 16.2 — EXECUTION COMMAND MODEL & DETERMINISTIC IDENTITY IMPLEMENTATION (added)
+
+- Scope: CONTROLLED IMPLEMENTATION of the ExecutionCommand domain artifact and deterministic identity per Checkpoint 16.1 boundary audit. No dashboard, planning engine, paper trading, authorization, execution, or broker integration.
+- Key findings:
+  - ExecutionCommand implemented as frozen+slots dataclass with deterministic `command_id = "cmd-" + sha256[:16]`.
+  - Identity payload includes binding + authoritative economic content; operational metadata (timestamps, labels, metadata) excluded so identity remains stable across operational context changes.
+  - `ExecutionMode` enum (`PAPER`/`LIVE`) derived from `authorization.scope`; caller cannot independently choose.
+  - `__post_init__` validates: non-empty identity fields, direction LONG/SHORT, timezone-aware timestamps, timestamp ordering (`valid_from >= created_at`, `valid_until > valid_from`), risk invariant (`planned_risk <= maximum_risk`), positive quantity, version >= 1.
+  - `create_execution_command` factory is fail-closed: only `AUTHORIZED` status accepted; intent binding and content fingerprint verified before construction; execution mode derived from scope.
+  - Copies authoritative economic fields by value from intent; never recalculates geometry, risk, or quantity.
+  - Forbidden semantics enforced: no broker order IDs, fills, positions, credentials, routing, exchange data, or broker order semantics.
+- Implementation files:
+  - `src/engine/models/execution_command.py` (model + factory + `ExecutionMode` enum)
+  - `tests/test_execution_command.py` (69 tests)
+  - `docs/checkpoint_16_2_execution_command_model_and_identity_implementation.md`
+- Tests: 69 focused tests pass. Full suite: 5408 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Separation preserved: No PaperTrade dependency, no analytical engine modification, no authorization integration, no execution, no broker, no persistence, no market data access, no dashboard integration.
+- Identity contract: command_id ("cmd-" + sha256[:16]) deterministic; authorization_id, intent_id, content_fingerprint preserved verbatim from authorization.
+- Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
 - Verdict: PASS
