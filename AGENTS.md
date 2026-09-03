@@ -1772,3 +1772,53 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract: command_id ("cmd-" + sha256[:16]) deterministic; authorization_id, intent_id, content_fingerprint preserved verbatim from authorization.
 - Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
 - Verdict: PASS
+
+## CHECKPOINT 16.3 — EXECUTION COMMAND FACTORY & AUTHORIZATION INTEGRATION BOUNDARY AUDIT (added)
+
+- Scope: AUDIT ONLY. Verifies that the `create_execution_command` factory (Checkpoint 16.2) correctly enforces the AUTHORIZED-only authorization boundary defined in Checkpoint 16.1. No implementation changes. No frozen files modified.
+- Key findings:
+  - Factory enforces AUTHORIZED-only: all non-AUTHORIZED statuses (ELIGIBLE, EXPIRED, REVOKED, SUPERSEDED, UNAUTHORIZED) raise ValueError → NO COMMAND.
+  - Intent binding verified: `authorization.intent_id == intent.intent_id` before construction; mismatch → ValueError.
+  - Content fingerprint verified: `authorization.content_fingerprint == intent.content_fingerprint` before construction; mismatch → ValueError.
+  - Type validation: non-ExecutionAuthorization → TypeError; non-OperationalTradeIntent → TypeError.
+  - Execution mode derived from `authorization.scope`; caller cannot independently choose.
+  - Economic fields copied by value from intent; no recalculation of geometry, risk, or quantity.
+  - No bypass paths exist: ExecutionCommand is only constructed via `create_execution_command` in production code; no dashboard endpoint, paper-trading path, or planning engine constructs commands.
+  - Import isolation: execution_command module imports no paper_trading, broker, dashboard, market_data, or execution_result code.
+  - Frozen files unmodified: Checkpoints 14.x and 15.x source files unchanged.
+  - 559 focused tests pass (test_execution_command + test_execution_authorization* + test_operational_trade_intent*).
+  - Full suite: 5408 passed, 2 pre-existing yfinance failures, 3 skipped. No regressions.
+- Files created: docs/checkpoint_16_3_execution_command_factory_and_authorization_integration_boundary_audit.md
+- Files modified: AGENTS.md (this entry only)
+- Verdict: PASS
+
+## CHECKPOINT 16.4 — EXECUTION COMMAND PERSISTENCE & LIFECYCLE BOUNDARY AUDIT (added)
+
+- Scope: AUDIT ONLY. Determines whether ExecutionCommand requires persistence, what lifecycle it should have before broker submission, where persistence belongs, and whether it can be introduced without weakening frozen authorization/execution boundaries. No implementation changes. No frozen files modified.
+- Key findings:
+  - ExecutionCommand has ZERO production consumers (only tests + docs reference it).
+  - No persistence, no dashboard integration, no broker integration, no execution path exists for ExecutionCommand.
+  - ExecutionCommand IS architecturally required to be persisted (it is the durable artifact bridging persisted ExecutionAuthorization and future execution adapters), but implementation can be DEFERRED until the first execution consumer appears.
+  - Pre-submission lifecycle: NOT_CREATED → CREATED only. No additional states needed before broker submission.
+  - Persistence belongs in a new `ExecutionCommandStore` in `src/engine/persistence/` (parallel to ExecutionAuthorizationStore), following the established atomic JSON pattern (tempfile.mkstemp + os.replace, safe-id validation, schema versioning, typed exceptions, default directory `./commands`).
+  - Persistence CAN be introduced without weakening frozen boundaries: the model is already frozen+slots and deterministic; the store is purely additive; no existing consumer behavior changes.
+  - Frozen files unmodified: Checkpoints 10.8, 11.8, 12.6, 13.6, 14.6, 15.6, 16.2 unchanged.
+- Boundary specification:
+  - Upstream: ExecutionAuthorization (frozen, Checkpoint 15) → ExecutionCommand (frozen, Checkpoint 16.2)
+  - Current downstream: None (ExecutionCommand has zero production consumers)
+  - Future downstream: ExecutionCommandStore (planned), BrokerAdapter (planned, Checkpoint 13)
+- Lifecycle boundary: NOT_CREATED → CREATED → [future: SUBMITTED → ACKNOWLEDGED → FILLED]. Post-CREATED states belong to downstream BrokerOrder / ExecutionResult, not ExecutionCommand.
+- Persistence pattern: mirrors ExecutionAuthorizationStore exactly — atomic writes, safe-id regex, schema version 1, typed exceptions (CommandStoreError, CommandNotFoundError, CommandIntegrityError, UnsupportedCommandSchemaVersionError), default directory `./commands`.
+- Serialization requirements: deterministic sorted-key JSON, Decimal as string, datetime as ISO, ExecutionMode enum by name, schema version checked before reconstruction, lossless round-trip.
+- Security: command contains no credentials/broker keys; safe-id prevents path traversal; deterministic command_id provides tamper evidence; atomic writes prevent partial content.
+- Tests required if/when implemented: basic persistence, round-trip, restart, idempotency, integrity, corruption, security, atomic writes, boundary isolation, determinism.
+- Files inspected:
+  - Source: src/engine/models/execution_command.py, src/engine/models/execution_authorization.py, src/engine/models/operational_trade_intent.py, src/engine/models/trade_plan.py, src/engine/models/paper_trade.py, src/engine/intelligence/execution_authorization.py, src/engine/intelligence/operational_trade_intent.py, src/engine/intelligence/operational_trade_intent_application.py, src/engine/persistence/execution_authorization_serialization.py, src/engine/persistence/execution_authorization_store.py, src/engine/persistence/exceptions.py, src/dashboard/paper_trade_store.py, src/dashboard/services.py, src/dashboard/app.py, src/engine/registry/persistence.py
+  - Tests: tests/test_execution_command.py, tests/test_execution_authorization*.py, tests/test_operational_trade_intent*.py
+  - Documentation: docs/checkpoint_16_1..16_3, docs/checkpoint_15_4..15_6
+- Files created: docs/checkpoint_16_4_execution_command_persistence_and_lifecycle_boundary_audit.md
+- Files modified: AGENTS.md (this entry only)
+- Implementation decision: NO IMPLEMENTATION CHANGES. Persistence design documented; implementation deferred to first execution consumer.
+- Freeze decision: CHECKPOINT 16.4 IS FROZEN.
+- Limitations: No ExecutionCommandStore implementation, no post-CREATED lifecycle states, no dashboard integration for commands, no broker adapter (all intentionally deferred).
+- Verdict: PASS WITH LIMITATIONS
