@@ -1641,3 +1641,26 @@ python -m pytest tests/ --ignore=tests/test_dashboard.py --ignore=tests/test_liv
 - Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic; timestamps excluded from identity payload.
 - Limitations: No clock abstraction, no persistence, no authorization layer integration, no dashboard integration, no execution path.
 - Verdict: PASS
+
+## CHECKPOINT 15.4 — EXECUTION AUTHORIZATION PERSISTENCE AND LIFECYCLE BOUNDARY AUDIT (added)
+
+- Scope: AUDIT ONLY. Architecture-first audit of Execution Authorization persistence and lifecycle boundary. Inspect full repository, design document produced, NO implementation of execution-side components. Must not modify frozen files (Checkpoints 10.8, 11.8, 12.6, 13.6, 14.6).
+- Key findings:
+  - CURRENT STATE: NO persistence exists for ExecutionAuthorization. The model is immutable (frozen=True, slots=True) with deterministic authorization_id ("auth-" + sha256[:16]), but records are purely in-memory and lost on process restart.
+  - PERSISTENCE PATTERN: Established filesystem JSON pattern exists in codebase (PaperTradeStore, ExperimentPersistence) using atomic writes (tempfile.mkstemp + os.replace), safe-id regex, schema-versioned, Decimal/datetime encoding. Any future authorization store MUST follow this exact pattern.
+  - LIFECYCLE STATES: All 6 states defined (UNAUTHORIZED, ELIGIBLE, AUTHORIZED, EXPIRED, REVOKED, SUPERSEDED). Only UNAUTHORIZED → ELIGIBLE → AUTHORIZED transitions are implemented. Post-AUTHORIZED transitions (EXPIRED/REVOKED/SUPERSEDED) are conceptual only with no mechanism to create new immutable records for state changes.
+  - IDENTITY/FINGERPRINT: Deterministic authorization_id and content_fingerprint preserved. Timestamps are timezone-aware and caller-supplied. No datetime.now()/utcnow() in model or engine.
+  - FAIL-CLOSED: Engine catches ValueError/TypeError from intent validation gracefully, returning EligibilityResult(eligible=False, reasons=...).
+  - EXECUTION ISOLATION: No execution semantics leak into authorization model. No broker fields, no order IDs, no fills, no position references, no portfolio references.
+  - NO UNVOIDABLE DEFECTS FOUND: No code changes required. All issues are future design decisions.
+- Boundary specification:
+  - Upstream: OperationalTradeIntent (frozen, Checkpoint 14.2) → ExecutionAuthorization (frozen, Checkpoint 15.2) → ExecutionAuthorizationEngine (Checkpoint 15.3)
+  - Current downstream: None (ExecutionAuthorization has zero production consumers)
+  - Future downstream: Execution Authorization Store (planned for Checkpoint 15.5), Execution Command (planned), Broker Adapter (planned)
+- Lifecycle boundary decision: Option B selected — implement persistence in Checkpoint 15.5. Post-AUTHORIZED transitions deferred to future checkpoint.
+- Tests: Full suite: 5282 passed, 2 pre-existing yfinance failures, 3 skipped, 1 warning. No regressions.
+- Separation preserved: No execution code, no broker code, no persistence code introduced.
+- Identity contract: authorization_id ("auth-"+sha256[:16]) deterministic; timestamps excluded from identity payload.
+- Limitations: No persistence implementation, no post-AUTHORIZED lifecycle transitions, no execution-side components, no dashboard integration for authorization, no clock abstraction.
+- Audit document: docs/checkpoint_15_4_execution_authorization_persistence_and_lifecycle_boundary_audit.md
+- Verdict: PASS WITH LIMITATIONS
