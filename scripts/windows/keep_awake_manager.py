@@ -426,7 +426,17 @@ def seconds_until(until: tuple[int, int], now: datetime | None = None) -> float:
     now = now or datetime.now()
     target = now.replace(hour=until[0], minute=until[1],
                          second=0, microsecond=0)
-    return (target - now).total_seconds()
+    delta = (target - now).total_seconds()
+    # Normalize to the nearest occurrence (±12h window). The HH:MM tuple
+    # carries no day context, so when the caller passes a time that has
+    # already passed today (or has not yet arrived today), the raw delta
+    # can span more than 12h. In that case the intended occurrence is
+    # the most recent past one or the next future one, respectively.
+    if delta > 43200:
+        delta -= 86400
+    elif delta < -43200:
+        delta += 86400
+    return delta
 
 
 def _fmt_until(until: tuple[int, int]) -> str:
