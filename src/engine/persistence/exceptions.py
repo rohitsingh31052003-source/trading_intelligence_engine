@@ -45,6 +45,27 @@ class UnsupportedCommandSchemaVersionError(CommandStoreError):
     """A persisted command uses an unsupported schema version."""
 
 
+# ============================================================
+# SUBMISSION LIFECYCLE PERSISTENCE EXCEPTIONS (Checkpoint 17.2)
+# ============================================================
+
+
+class SubmissionStoreError(Exception):
+    """Base error for submission lifecycle persistence."""
+
+
+class SubmissionNotFoundError(SubmissionStoreError):
+    """A requested submission lifecycle was not found in the store."""
+
+
+class SubmissionIntegrityError(SubmissionStoreError):
+    """A persisted submission lifecycle failed an integrity check."""
+
+
+class UnsupportedSubmissionSchemaVersionError(SubmissionStoreError):
+    """A persisted submission lifecycle uses an unsupported schema version."""
+
+
 __all__ = [
     "AuthorizationIntegrityError",
     "AuthorizationNotFoundError",
@@ -52,6 +73,10 @@ __all__ = [
     "CommandIntegrityError",
     "CommandNotFoundError",
     "CommandStoreError",
+    "SubmissionIntegrityError",
+    "SubmissionNotFoundError",
+    "SubmissionStoreError",
     "UnsupportedAuthorizationSchemaVersionError",
     "UnsupportedCommandSchemaVersionError",
+    "UnsupportedSubmissionSchemaVersionError",
 ]
