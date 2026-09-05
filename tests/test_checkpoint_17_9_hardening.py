@@ -1358,16 +1358,13 @@ class TestCredentialSweep:
 
 
 class TestCredentialRotation:
-    def test_rotation_picked_up_lazily(self):
+    def test_rotation_picked_up_lazily(self, monkeypatch):
+        monkeypatch.delenv(UPSTOX_EXECUTION_ACCESS_TOKEN_ENV, raising=False)
         provider = EnvironmentUpstoxCredentialProvider()
         assert provider.get_access_token() == ""
-        import os
 
-        os.environ[UPSTOX_EXECUTION_ACCESS_TOKEN_ENV] = "rotated-token"
-        try:
-            assert provider.get_access_token() == "rotated-token"
-        finally:
-            os.environ.pop(UPSTOX_EXECUTION_ACCESS_TOKEN_ENV, None)
+        monkeypatch.setenv(UPSTOX_EXECUTION_ACCESS_TOKEN_ENV, "rotated-token")
+        assert provider.get_access_token() == "rotated-token"
 
     def test_credentials_not_required_to_reconstruct_command(self):
         cmd = _cmd()
