@@ -56,7 +56,11 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, Protocol
 
-from engine.config.universe import BENCHMARK_INDEX, COMBINED_UNIVERSE
+from engine.config.universe import (
+    BENCHMARK_INDEX,
+    COMBINED_UNIVERSE,
+    NIFTY200_SYMBOLS,
+)
 from engine.data.historical_times import (
     canonical_timeframe,
     timeframe_seconds,
@@ -320,13 +324,15 @@ def _default_yahoo_symbol_map() -> dict[str, str]:
 
     Derived from the single canonical universe source
     (:mod:`engine.config.universe`): every NIFTY 50 ∪ SENSEX constituent
-    resolves to its ``<NSE symbol>.NS`` Yahoo symbol and the benchmark
-    index instruments resolve to their ``^``-prefixed Yahoo symbols.
-    No second universe is defined here — only provider-specific Yahoo
-    formatting of the existing canonical universe.
+    resolves to its ``<NSE symbol>.NS`` Yahoo symbol, every NIFTY Top 200
+    constituent resolves the same way (Checkpoint 19.1), and the
+    benchmark index instruments resolve to their ``^``-prefixed Yahoo
+    symbols. No second universe is defined here — only provider-specific
+    Yahoo formatting of the existing canonical universes.
     """
 
     mapping = {name: f"{name}.NS" for name in COMBINED_UNIVERSE}
+    mapping.update({name: f"{name}.NS" for name in NIFTY200_SYMBOLS})
     for name in BENCHMARK_INDEX:
         mapping[name] = _INDEX_YAHOO_SYMBOLS.get(name, name)
     return mapping

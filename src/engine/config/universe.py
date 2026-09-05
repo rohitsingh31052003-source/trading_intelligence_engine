@@ -164,11 +164,52 @@ MARKET_UNIVERSE: tuple[str, ...] = tuple(
     [name for name in BENCHMARK_INDEX] + list(combined_universe()),
 )
 
+# ============================================================
+# NIFTY TOP 200 (single, auditable constituent source — Checkpoint 19.1)
+# ============================================================
+
+#: The CANONICAL NIFTY Top 200 universe definition lives in
+#: :mod:`engine.config.nifty200_manifest` (symbol, company name, ISIN per
+#: the official NSE ``ind_nifty200list.csv``; full source/provenance
+#: embedded there). This module re-exports the symbol tuple so the
+#: existing constellation of consumers (dashboard watchlist, provider
+#: symbol maps, scanner) can reference ONE source of truth.
+from engine.config.nifty200_manifest import (  # noqa: E402  (import after module constants)
+    NIFTY200_CONSTITUENTS,
+    NIFTY200_CSV_SHA256,
+    NIFTY200_ISINS,
+    NIFTY200_MANIFEST_VERSION,
+    NIFTY200_METADATA,
+    NIFTY200_SOURCE_URL,
+    NIFTY200_SYMBOLS,
+)
+
+#: The NIFTY benchmark index instrument remains SEPARATE from the Top 200
+#: stock universe (it is never a "constituent" of itself). The market
+#: universe that includes the benchmark is intentionally NOT extended to
+#: the Top 200 here: :data:`MARKET_UNIVERSE` keeps its established
+#: meaning (benchmark + NIFTY 50 ∪ SENSEX) so the EXISTING scanner /
+#: workstation / watchlist behaviour is preserved. Checkpoint 19.1 adds
+#: the Top 200 as an explicit, versioned, auditable universe alongside
+#: the existing one; Checkpoint 19.3 (continuous scanning) owns the
+#: decision of which universe the scanner consumes.
+MARKET_UNIVERSE_TOP200: tuple[str, ...] = tuple(
+    [name for name in BENCHMARK_INDEX] + list(NIFTY200_SYMBOLS),
+)
+
 
 __all__ = [
     "BENCHMARK_INDEX",
     "COMBINED_UNIVERSE",
     "MARKET_UNIVERSE",
+    "MARKET_UNIVERSE_TOP200",
+    "NIFTY200_CONSTITUENTS",
+    "NIFTY200_CSV_SHA256",
+    "NIFTY200_ISINS",
+    "NIFTY200_MANIFEST_VERSION",
+    "NIFTY200_METADATA",
+    "NIFTY200_SOURCE_URL",
+    "NIFTY200_SYMBOLS",
     "NIFTY50_CONSTITUENTS",
     "SENSEX_CONSTITUENTS",
     "combined_universe",

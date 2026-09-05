@@ -39,6 +39,13 @@ from engine.config.universe import (
     BENCHMARK_INDEX,
     COMBINED_UNIVERSE,
     MARKET_UNIVERSE,
+    MARKET_UNIVERSE_TOP200,
+    NIFTY200_CSV_SHA256,
+    NIFTY200_ISINS,
+    NIFTY200_MANIFEST_VERSION,
+    NIFTY200_METADATA,
+    NIFTY200_SOURCE_URL,
+    NIFTY200_SYMBOLS,
     NIFTY50_CONSTITUENTS,
     SENSEX_CONSTITUENTS,
     combined_universe,
@@ -52,13 +59,29 @@ UNIVERSE_YAHOO_SYMBOLS: dict[str, str] = {
     name: f"{name}.NS" for name in COMBINED_UNIVERSE
 }
 
+#: Yahoo Finance symbols for every NIFTY Top 200 constituent
+#: (Checkpoint 19.1). All 200 constituents are NSE-listed equities, so
+#: the same ``<NSE symbol>.NS`` convention resolves every one of them.
+#: Derived from :data:`NIFTY200_SYMBOLS` — no second symbol universe.
+TOP200_YAHOO_SYMBOLS: dict[str, str] = {
+    name: f"{name}.NS" for name in NIFTY200_SYMBOLS
+}
+
 
 __all__ = [
     "BENCHMARK_INDEX",
     "COMBINED_UNIVERSE",
     "MARKET_UNIVERSE",
+    "MARKET_UNIVERSE_TOP200",
+    "NIFTY200_CSV_SHA256",
+    "NIFTY200_ISINS",
+    "NIFTY200_MANIFEST_VERSION",
+    "NIFTY200_METADATA",
+    "NIFTY200_SOURCE_URL",
+    "NIFTY200_SYMBOLS",
     "NIFTY50_CONSTITUENTS",
     "SENSEX_CONSTITUENTS",
+    "TOP200_YAHOO_SYMBOLS",
     "UNIVERSE_YAHOO_SYMBOLS",
     "combined_universe",
 ]
