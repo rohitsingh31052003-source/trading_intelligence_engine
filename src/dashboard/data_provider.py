@@ -607,6 +607,16 @@ class FixtureDataProvider:
     def is_timeframe_supported(self, setup_timeframe: str) -> bool:
         return setup_timeframe in ("15M", "15m")
 
+    def supports_instrument(self, instrument: str) -> bool:
+        """Declare whether this provider can serve ``instrument``.
+
+        The fixture provider only serves the local deterministic fixture
+        set (Checkpoint 19.2 capability discovery). Any other instrument
+        is honestly unsupported — never fabricated.
+        """
+
+        return instrument in self._cache
+
     def fetch(
         self,
         instrument: str,
@@ -854,6 +864,17 @@ class YahooDataProvider:
 
     def is_timeframe_supported(self, setup_timeframe: str) -> bool:
         return setup_timeframe in self.SUPPORTED_INTERVALS
+
+    def supports_instrument(self, instrument: str) -> bool:
+        """Declare whether this provider can serve ``instrument``.
+
+        The Yahoo provider can resolve ANY instrument (unknown tickers
+        are passed through verbatim and Yahoo either serves them or
+        returns no data), so this is ``True`` for every request. It is
+        NEVER a data-coverage claim — only a capability declaration.
+        """
+
+        return True
 
     def _interval_max_days(self, interval: str) -> int:
         """Yahoo's permitted history (days) for ``interval``, safety-margined.
